@@ -1,0 +1,12 @@
+# TODO: configurar os serviços manualmente.
+# Este arquivo existe apenas como placeholder estrutural.
+#
+# Serviços previstos (ainda não definidos):
+# - backend
+# - postgres (com pgvector)
+# - redis
+# - frontend (futuro)
+#
+# Não há containers funcionais neste momento.
+
+# services: {}
