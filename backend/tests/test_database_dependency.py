@@ -1,13 +1,8 @@
-"""1. Importe FastAPI, Depends, Annotated, AsyncSession, text e nossa função get_db.
-2. Crie uma aplicação FastAPI() isolada para o teste.
-3. Registre um endpoint temporário GET /_test/db.
-4. Faça o endpoint receber uma sessão usando Annotated[AsyncSession, Depends(get_db)].
-5. Execute SELECT 1 com await session.execute().
-6. Retorne o valor obtido em um JSON.
-Importante: não utilize SessionLocal() diretamente dentro do endpoint. Queremos que a sessão seja fornecida exclusivamente pelo sistema de dependências do FastAPI."""
+"""Integração de testes para verificar a dependência do banco de dados."""
 
 from typing import Annotated
 
+import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -24,6 +19,7 @@ async def db_probe(session: Annotated[AsyncSession, Depends(get_db)]):
     return {"result": result.scalar_one()}
 
 
+@pytest.mark.integration
 def test_database_dependency():
     with TestClient(app) as client:
         response = client.get("/_test/db")

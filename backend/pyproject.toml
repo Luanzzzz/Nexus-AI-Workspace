@@ -28,3 +28,8 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*"]
 exclude = ["alembic*", "evals*", "tests*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require external services such as PostgreSQL",
+]
