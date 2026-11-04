@@ -8,11 +8,12 @@ from app.db.base import Base
 from app.db.session import database_url
 from app.models.user import User
 from app.models.workspace import Workspace
+from app.models.workspace_member import WorkspaceMember
 
 config = context.config
 
 target_metadata = Base.metadata
-registered_models = (User, Workspace)
+registered_models = (User, Workspace, WorkspaceMember)
 
 # roda a migration offline
 def do_run_migrations(connection):

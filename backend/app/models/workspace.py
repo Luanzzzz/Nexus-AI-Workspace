@@ -15,8 +15,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
-    # Importação só para o tipo: User e Workspace se referenciam.
+    # Importação só para o tipo: os modelos de associação se referenciam.
     from app.models.user import User
+    from app.models.workspace_member import WorkspaceMember
 
 
 class Workspace(Base):
@@ -39,3 +40,6 @@ class Workspace(Base):
     )
 
     owner: Mapped[User] = relationship(back_populates="workspaces")
+    memberships: Mapped[list[WorkspaceMember]] = relationship(
+        back_populates="workspace"
+    )
