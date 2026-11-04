@@ -31,5 +31,5 @@ exclude = ["alembic*", "evals*", "tests*"]
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: tests that require external services such as PostgreSQL",
+    "integration: tests that access a real PostgreSQL database; they must target nexus_ai_test",
 ]
