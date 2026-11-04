@@ -110,6 +110,27 @@ async def test_workspace_member_rejects_missing_user():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_workspace_member_rejects_missing_workspace():
+    async with SessionLocal() as session:
+        member_user = _user("Workspace Member")
+        session.add(member_user)
+        await session.flush()
+
+        membership = WorkspaceMember(
+            workspace_id=999_999_999,
+            user_id=member_user.id,
+            role="viewer",
+        )
+        session.add(membership)
+
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+        await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_workspace_member_rejects_invalid_role():
     async with SessionLocal() as session:
         owner = _user("Workspace Owner")

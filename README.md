@@ -4,7 +4,7 @@ Projeto de portfólio focado em backend Python, engenharia de IA (RAG e agentes)
 
 O objetivo é estudar e consolidar engenharia de software na prática, implementando as partes do sistema de forma incremental.
 
-**Status:** em desenvolvimento. Esta versão contém apenas a estrutura inicial do monorepo. Não há funcionalidades implementadas.
+**Status:** em desenvolvimento. O backend já tem configuração, endpoint de saúde, conexão assíncrona com PostgreSQL, modelos de usuário e workspace, migrations e testes de integração. Frontend, RAG e agentes ainda não foram implementados.
 
 ## Stack planejada
 

@@ -65,6 +65,24 @@ async def test_workspace_owner_references_existing_user():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_duplicate_workspace_slug_raises_integrity_error():
+    async with SessionLocal() as session:
+        owner = _user("Workspace Owner")
+        session.add(owner)
+        await session.flush()
+
+        slug = f"workspace-{uuid4().hex}"
+        session.add(Workspace(name="First Workspace", slug=slug, owner_id=owner.id))
+        session.add(Workspace(name="Second Workspace", slug=slug, owner_id=owner.id))
+
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+        await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_workspace_rejects_missing_owner():
     async with SessionLocal() as session:
         workspace = _workspace(owner_id=999_999_999)

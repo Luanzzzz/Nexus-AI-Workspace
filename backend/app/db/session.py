@@ -1,6 +1,6 @@
-"""Database session management.
+"""Sessão assíncrona do PostgreSQL.
 
-Engine and session wiring will be implemented later.
+O engine e a factory de sessões usam a configuração da aplicação.
 """
 
 from sqlalchemy import URL

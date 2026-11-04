@@ -16,7 +16,7 @@ target_metadata = Base.metadata
 registered_models = (User, Workspace, WorkspaceMember)
 
 
-# roda a migration offline
+# Aplica as migrations na conexão já aberta.
 def do_run_migrations(connection):
     context.configure(
         connection=connection,
@@ -38,7 +38,7 @@ async def run_async_migrations():
         await engine.dispose()
 
 
-# roda a migration online ou offline
+# O modo offline não abre conexão e não é suportado.
 if context.is_offline_mode():
     raise RuntimeError("Offline mode is not supported")
 else:
