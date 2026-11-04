@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+if TYPE_CHECKING:
+    # Importação só para o tipo: User e Workspace se referenciam.
+    from app.models.workspace import Workspace
 
 
 class User(Base):
@@ -25,3 +32,5 @@ class User(Base):
     nullable=False,
     onupdate=lambda: datetime.now(UTC),
 )
+
+    workspaces: Mapped[list[Workspace]] = relationship(back_populates="owner")

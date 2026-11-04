@@ -1,4 +1,6 @@
-"""SQLAlchemy models.
+"""SQLAlchemy models."""
 
-Persistence models will be implemented later.
-"""
+from app.models.user import User
+from app.models.workspace import Workspace
+
+__all__ = ["User", "Workspace"]

@@ -4,12 +4,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from alembic import context
+from app.db.base import Base
 from app.db.session import database_url
 from app.models.user import User
+from app.models.workspace import Workspace
 
 config = context.config
 
-target_metadata = User.metadata
+target_metadata = Base.metadata
+registered_models = (User, Workspace)
 
 # roda a migration offline
 def do_run_migrations(connection):
