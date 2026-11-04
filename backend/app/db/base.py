@@ -1,4 +1,7 @@
-"""SQLAlchemy declarative base.
+"""SQLAlchemy declarative base."""
 
-Model metadata will be implemented later.
-"""
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    pass

@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings",
     "sqlalchemy[asyncio]>=2.0,<3.0",
     "psycopg[binary]>=3,<4",
+    "alembic",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ include = ["app*"]
 exclude = ["alembic*", "evals*", "tests*"]
 
 [tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: tests that access a real PostgreSQL database; they must target nexus_ai_test",
 ]
