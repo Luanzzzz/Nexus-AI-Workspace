@@ -15,11 +15,12 @@ config = context.config
 target_metadata = Base.metadata
 registered_models = (User, Workspace, WorkspaceMember)
 
+
 # roda a migration offline
 def do_run_migrations(connection):
     context.configure(
-    connection=connection,
-    target_metadata=target_metadata,
+        connection=connection,
+        target_metadata=target_metadata,
     )
 
     with context.begin_transaction():
@@ -29,12 +30,13 @@ def do_run_migrations(connection):
 # roda a migration online
 async def run_async_migrations():
     engine = create_async_engine(database_url, poolclass=NullPool)
-    
+
     try:
         async with engine.connect() as connection:
             await connection.run_sync(do_run_migrations)
-    finally:    
+    finally:
         await engine.dispose()
+
 
 # roda a migration online ou offline
 if context.is_offline_mode():

@@ -23,16 +23,16 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True),
-    default=lambda: datetime.now(UTC),
-    nullable=False,
-)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
     updated_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True),
-    default=lambda: datetime.now(UTC),
-    nullable=False,
-    onupdate=lambda: datetime.now(UTC),
-)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        onupdate=lambda: datetime.now(UTC),
+    )
 
     workspaces: Mapped[list[Workspace]] = relationship(back_populates="owner")
     memberships: Mapped[list[WorkspaceMember]] = relationship(back_populates="user")

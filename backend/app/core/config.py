@@ -14,6 +14,8 @@ Attributes:
     postgres_password: The password for the PostgreSQL database.
     postgres_db: The database name for the PostgreSQL database.
 """
+
+
 class Settings(BaseSettings):
     app_name: str = "Nexus AI Workspace API"
     environment: str = "development"
@@ -25,7 +27,7 @@ class Settings(BaseSettings):
     postgres_port: int = 5433
 
     model_config = SettingsConfigDict(
-        env_file=ROOT_DIR / ".env",        
+        env_file=ROOT_DIR / ".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
