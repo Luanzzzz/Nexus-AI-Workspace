@@ -41,6 +41,7 @@ def test_hash_password_generates_different_hashes_for_same_password():
     assert verify_password(password, hashed_password1)
     assert verify_password(password, hashed_password2)
 
+
 # 4. teste verificação de senha com hash corrompido
 def test_verify_password_rejects_corrupted_hash():
     with pytest.raises(InvalidHashError):

@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]>=3,<4",
     "alembic",
     "argon2-cffi",
+    "email-validator",
 ]
 
 [project.optional-dependencies]
