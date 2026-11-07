@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests that access a real PostgreSQL database; they must target nexus_ai_test",
+]
+
+[tool.ruff]
+src = ["backend"]
+extend-exclude = [".venv", "backend/.venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

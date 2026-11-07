@@ -14,6 +14,20 @@ O objetivo é estudar e consolidar engenharia de software na prática, implement
 - **Frontend:** Next.js, React, TypeScript, Tailwind
 - **Qualidade / infra:** pytest, pytest-asyncio, Ruff, Docker, Docker Compose, GitHub Actions (futuro)
 
+## Verificação do backend
+
+Ruff, pytest e Alembic também podem ser executados na raiz. O pacote e as migrations ficam em `backend/`, então o teste de schema usa esse caminho:
+
+```bash
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest backend/tests/unit/test_user_schema.py -v
+POSTGRES_DB=nexus_ai_test python -m pytest -v
+POSTGRES_DB=nexus_ai_test python -m alembic check
+```
+
+Dentro de `backend/`, o mesmo teste de schema é `tests/unit/test_user_schema.py`. O `alembic.ini` da raiz aponta para `backend/alembic`.
+
 ## Estrutura do monorepo
 
 ```text

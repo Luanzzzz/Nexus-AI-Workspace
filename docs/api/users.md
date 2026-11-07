@@ -25,6 +25,14 @@ Somente campos públicos: `id`, `name`, `email`, `is_active`, `created_at` e `up
 ## Pendências de segurança
 
 - O limite de 128 caracteres é operacional do Nexus. Aceitar pelo menos 64 caracteres e não exigir composição segue a direção do NIST SP 800-63B-4, mas isto não é conformidade completa com o NIST.
-- Senhas comprometidas ainda não são bloqueadas. O NIST também trata esse controle, e ele fica fora deste schema.
+- O schema aceita senhas longas e triviais, como 15 espaços ou 15 vezes a mesma letra. Isso segue a regra de comprimento. Não vamos acrescentar exigência de símbolo, número ou maiúscula para compensar. Senhas comprometidas ou excessivamente comuns ficam para uma política separada, fora deste schema.
 - O hash Argon2id continua em `hash_password()`. A regra de comprimento do cadastro não altera esse módulo.
 - Não existe schema de login. Quando ele for criado, precisa reutilizar a mesma forma canônica de email, senão o endereço em minúsculas do cadastro não encontra a conta.
+- `email` único em `String` no PostgreSQL diferencia maiúsculas de minúsculas. A forma canônica do schema ainda não está garantida na persistência nem nas consultas. Ver a Etapa 2.4 abaixo.
+
+## Requisitos obrigatórios da Etapa 2.4
+
+O endpoint de registro ainda não existe. Estes itens entram nessa etapa, antes de expor o cadastro.
+
+- A resposta HTTP 422 e os logs não podem conter a senha enviada. Hoje `password` é `str`, e `ValidationError.errors()` inclui o valor original em `error["input"]`. O FastAPI serializa esse detalhe por padrão. Um teste de API do endpoint precisa enviar uma senha rejeitada e confirmar que esse valor não aparece no corpo da resposta.
+- A forma canônica do email, o endereço inteiro em minúsculas, precisa ser a mesma na gravação e na consulta de login. Também cabe avaliar uma restrição no banco para impedir que outro caminho de escrita grave dois endereços equivalentes, porque `unique=True` em `String` não faz isso sozinho.

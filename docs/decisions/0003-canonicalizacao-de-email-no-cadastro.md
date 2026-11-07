@@ -13,6 +13,8 @@ O cadastro precisa identificar a mesma conta sem diferenciar maiúsculas de min�
 
 No Nexus, o `UserRegister` valida com `EmailStr` e em seguida converte o endereço inteiro para minúsculas.
 
-Isso é uma convenção do produto para simplificar cadastro e o futuro login. Não é uma regra universal de email. Em alguns sistemas, a parte anterior ao `@` diferencia maiúsculas de minúsculas. Aceitamos esse trade-off no MVP.
+Isso é uma convenção do produto para simplificar cadastro e o futuro login. Não é uma regra universal de email. Em alguns sistemas, a parte anterior ao `@` diferencia maiúsculas de minúsculas. A OWASP também alerta que essa equivalência não vale para todos os provedores. Aceitamos esse trade-off no MVP.
+
+A coluna `users.email` continua `String` com `unique=True`. Essa restrição diferencia maiúsculas de minúsculas, então não impede sozinha dois endereços que só variam na caixa. A Etapa 2.4 precisa aplicar a mesma forma canônica na persistência e na consulta de login, e avaliar uma restrição adicional no banco para os outros caminhos de escrita.
 
 A senha não segue essa normalização. O comprimento de 15 a 128 caracteres também é política do Nexus: o mínimo acompanha a autenticação somente por senha do NIST SP 800-63B-4, e 128 é o teto operacional inicial. Não há regras obrigatórias de composição. Isso não implementa os demais controles do NIST, como o bloqueio de senhas comprometidas.
