@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 
 class User(Base):
     __tablename__ = "users"
+    # UNIQUE(email) continua case-sensitive. O CHECK fecha o outro caminho de escrita.
+    __table_args__ = (
+        CheckConstraint(
+            "email = lower(email)",
+            name="ck_users_email_lowercase",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String, unique=True)
