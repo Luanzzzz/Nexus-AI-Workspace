@@ -86,5 +86,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 - JWT assinado não é criptografado: qualquer portador lê as claims. Por isso o token não leva email nem dados sensíveis.
 - Não há refresh token nem revogação. Um token vale até `exp` (30 minutos).
-- Rate limiting e proteção contra força bruta no login são requisito pendente antes de expor a API publicamente (OWASP Authentication Cheat Sheet). Ver [ADR 0006](../decisions/0006-jwt-access-token.md).
+- **O login não está pronto para exposição pública.** Pendentes: controle de taxa (força bruta, OWASP Authentication Cheat Sheet) e controle de concorrência das verificações Argon2id, que custam CPU e memória. Não há rate limiting nesta etapa. Redis não será introduzido agora; os controles proporcionais dependem da hospedagem do MVP. Ver [ADR 0006](../decisions/0006-jwt-access-token.md).
+- Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização); com debug o 500 vazaria traceback em vez do corpo genérico.
+- O token só é aceito com `sub` inteiro positivo (até 2147483647) e `iat`/`exp` inteiros válidos; qualquer outra forma é rejeitada como token inválido.
 - Nenhuma rota consome o token ainda; não existe dependência de autenticação.
