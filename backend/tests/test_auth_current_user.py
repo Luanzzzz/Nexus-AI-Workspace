@@ -329,42 +329,39 @@ async def test_me_database_unavailable_returns_controlled_500(
     _assert_no_leaks(caplog.text, token)
 
 
-_COMMITTED_EMAILS: list[str] = []
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_isolation_step1_explicit_commit_stays_inside_outer_transaction(
-    client: httpx.AsyncClient, session: AsyncSession
-):
-    user = await _create_user(session)
-    _COMMITTED_EMAILS.append(user.email)
+async def test_explicit_commit_is_rolled_back_with_outer_transaction():
+    # Autocontido: reproduz o padrão da fixture `session` e prova que o commit
+    # da sessão só libera o SAVEPOINT; o rollback externo desfaz tudo.
+    email = f"me-{uuid4().hex}@example.com"
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            db_session = AsyncSession(
+                bind=connection,
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
+            try:
+                await UserRepository(db_session).create_user(
+                    name="Ana Silva", email=email, password_hash=_PASSWORD_HASH
+                )
+                await db_session.commit()
+            finally:
+                await db_session.close()
+                await transaction.rollback()
 
-    # Com create_savepoint, o commit só libera o SAVEPOINT; a transação externa
-    # segue aberta. Sem isso, o dado seria persistido de verdade.
-    await session.commit()
-
-    response = await client.get(_URL, headers=_bearer(create_access_token(user.id)))
-    assert response.status_code == 200
-    async with engine.connect() as other:
-        visible = await other.scalar(
-            select(func.count()).select_from(User).where(User.email == user.email)
-        )
-    assert visible == 0
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_isolation_step2_committed_data_is_gone_after_previous_test():
-    # Depende do passo 1 (ordem do arquivo): ele já terminou e foi revertido.
-    assert len(_COMMITTED_EMAILS) == 1
-    async with engine.connect() as other:
-        remaining = await other.scalar(
-            select(func.count())
-            .select_from(User)
-            .where(User.email == _COMMITTED_EMAILS[0])
-        )
-    assert remaining == 0
+        # Conexão e sessão novas: só enxergam o que foi persistido de verdade.
+        async with engine.connect() as other:
+            persisted = await other.scalar(
+                select(func.count()).select_from(User).where(User.email == email)
+            )
+        assert persisted == 0
+    finally:
+        # Se o isolamento falhar, não deixa lixo no banco de testes.
+        async with engine.begin() as cleanup:
+            await cleanup.execute(delete(User).where(User.email == email))
 
 
 def test_openapi_documents_me_with_bearer_security():
