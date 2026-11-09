@@ -89,4 +89,40 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 - **O login não está pronto para exposição pública.** Pendentes: controle de taxa (força bruta, OWASP Authentication Cheat Sheet) e controle de concorrência das verificações Argon2id, que custam CPU e memória. Não há rate limiting nesta etapa. Redis não será introduzido agora; os controles proporcionais dependem da hospedagem do MVP. Ver [ADR 0006](../decisions/0006-jwt-access-token.md).
 - Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização); com debug o 500 vazaria traceback em vez do corpo genérico.
 - O token só é aceito com `sub` inteiro positivo (até 2147483647) e `iat`/`exp` inteiros válidos; qualquer outra forma é rejeitada como token inválido.
-- Nenhuma rota consome o token ainda; não existe dependência de autenticação.
+- A única rota que consome o token é [`GET /api/v1/auth/me`](#usuário-atual).
+
+## Usuário atual
+
+`GET /api/v1/auth/me` devolve o usuário dono do token. Autenticação: cabeçalho `Authorization: Bearer <access_token>` (o token do [login](#login)). Não há corpo nem parâmetros.
+
+A dependência `get_current_user` roda nesta ordem: extrai o Bearer (`HTTPBearer(auto_error=False)`), valida o JWT com `decode_access_token()`, lê o id de `sub` e só então consulta o usuário no PostgreSQL (`UserRepository.get_by_id`). O JWT prova apenas que o backend emitiu o token; o banco decide se a conta ainda pode usá-lo. A consulta ocorre em toda requisição protegida e a dependência devolve o `User` do ORM; a rota responde com `UserResponse`.
+
+### Resposta 200 (`UserResponse`)
+
+```json
+{"id": 1, "name": "Ana Silva", "email": "ana@example.com", "is_active": true, "created_at": "2026-01-01T12:00:00Z", "updated_at": "2026-01-01T12:00:00Z"}
+```
+
+Só campos públicos; `password` e `password_hash` nunca saem.
+
+### Status
+
+| Status | Quando | Corpo |
+| --- | --- | --- |
+| 200 | Token válido de usuário existente e ativo | `UserResponse` |
+| 401 | Token ausente, vazio, malformado, esquema que não é Bearer, assinatura inválida, expirado, usuário inexistente ou inativo | `{"detail": "Não autenticado."}` e `WWW-Authenticate: Bearer` |
+| 500 | Banco indisponível ou erro inesperado | `{"detail": "Erro interno do servidor."}` |
+
+O 401 é idêntico em todos os casos e não diferencia token inválido de conta removida ou desativada. Não se usa 403. Com token inválido, o banco nem é consultado. Falha do banco não vira 401: segue o tratamento HTTP 500 existente, sem SQL, credenciais nem token na resposta ou no log.
+
+### Exemplo
+
+```bash
+curl http://localhost:8000/api/v1/auth/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+### Limites
+
+- Um token de usuário removido ou desativado deixa de valer na próxima requisição, mas não há revogação por token nem refresh token: um token válido de conta ativa vale até `exp`.
+- Sem RBAC, roles ou workspace nesta etapa.
