@@ -149,6 +149,75 @@ def test_non_string_subject_rejected():
         decode_access_token(_encode(_fresh_payload(sub=42)))
 
 
+@pytest.mark.parametrize(
+    "sub",
+    [
+        "0",
+        "-1",
+        " 1",
+        "1 ",
+        "1.0",
+        "2147483648",
+        "9" * 5000,
+        "1" * 20,
+        1,
+        True,
+    ],
+    ids=repr,
+)
+def test_malformed_subject_with_valid_signature_rejected(sub):
+    token = _encode(_fresh_payload(sub=sub))
+
+    with pytest.raises(InvalidTokenError):
+        decode_access_token(token)
+
+
+def test_max_user_id_subject_accepted():
+    assert decode_access_token(_encode(_fresh_payload(sub="2147483647"))).user_id == (
+        2**31 - 1
+    )
+
+
+def _ts():
+    return int(datetime.now(UTC).timestamp())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"iat": str(_ts())},
+        {"exp": str(_ts() + 600)},
+        {"exp": 10**20},
+        {"exp": 253_402_300_800},
+        {"iat": _ts() + 0.0},
+        {"exp": _ts() + 600.5},
+        {"iat": True},
+        {"exp": True},
+        {"iat": 0},
+        {"iat": -1},
+    ],
+    ids=repr,
+)
+def test_malformed_timestamps_with_valid_signature_rejected(overrides):
+    with pytest.raises(InvalidTokenError) as exc_info:
+        decode_access_token(_encode(_fresh_payload(**overrides)))
+
+    assert exc_info.value.__cause__ is None
+
+
+def test_exp_not_after_iat_rejected():
+    # Via decode, exp <= iat com exp no futuro exigiria iat no futuro; o PyJWT
+    # (iat no futuro) rejeita antes. Cobre a regra diretamente.
+    with pytest.raises(InvalidTokenError):
+        tokens._parse_timestamps(_ts(), _ts() - 10)
+
+
+@pytest.mark.parametrize("user_id", [0, -1, 2**31, True, 1.5, "1", None])
+def test_create_rejects_invalid_user_id(user_id):
+    with pytest.raises(ValueError):
+        create_access_token(user_id, now=NOW)
+
+
 def test_wrong_issuer_rejected():
     with pytest.raises(InvalidTokenError):
         decode_access_token(_encode(_fresh_payload(iss="outro-emissor")))
@@ -166,8 +235,10 @@ def test_wrong_token_type_rejected(token_type):
 
 
 def test_hs512_algorithm_rejected():
+    # Chave com >= 64 bytes: evita o InsecureKeyLengthWarning do PyJWT.
+    key = "k" * 64
     with pytest.raises(InvalidTokenError):
-        decode_access_token(_encode(_fresh_payload(), algorithm="HS512"))
+        decode_access_token(_encode(_fresh_payload(), key=key, algorithm="HS512"))
 
 
 def test_alg_none_rejected():
