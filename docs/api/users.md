@@ -1,6 +1,6 @@
 # Contrato de usuário
 
-`POST /api/v1/auth/register` cria o usuário. O corpo é `UserRegister`. A resposta de sucesso é `UserResponse`, HTTP 201. Não há rota de login.
+`POST /api/v1/auth/register` cria o usuário. O corpo é `UserRegister`. A resposta de sucesso é `UserResponse`, HTTP 201. O login está descrito em [Login](#login).
 
 O router chama o `AuthService`. O serviço canonicaliza o email, consulta, gera o hash Argon2id fora do event loop e grava. O `UserRepository` não baixa a caixa do email, não recebe senha em claro e não confirma a transação. Ver [ADR 0005](../decisions/0005-transacao-do-cadastro.md).
 
@@ -39,4 +39,52 @@ Somente campos públicos: `id`, `name`, `email`, `is_active`, `created_at` e `up
 - O limite de 128 caracteres é operacional do Nexus. Aceitar pelo menos 64 caracteres e não exigir composição segue a direção do NIST SP 800-63B-4, mas isto não é conformidade completa com o NIST.
 - O schema aceita senhas longas e triviais, como 15 espaços ou 15 vezes a mesma letra. Isso segue a regra de comprimento. Não vamos acrescentar exigência de símbolo, número ou maiúscula para compensar. Senhas comprometidas ou excessivamente comuns ficam para uma política separada, fora deste schema.
 - O hash Argon2id continua em `hash_password()`, que permanece síncrono. A regra de comprimento do cadastro não altera esse módulo.
-- Não existe schema de login. Quando ele for criado, precisa reutilizar a mesma forma canônica de email, senão o endereço em minúsculas do cadastro não encontra a conta.
+- `LoginRequest` reutiliza a mesma forma canônica de email do cadastro; sem isso o endereço em minúsculas não encontraria a conta.
+
+## Login
+
+`POST /api/v1/auth/login` recebe JSON (`LoginRequest`) e devolve um access token. Não é o fluxo OAuth2 password: não usa `application/x-www-form-urlencoded`, `username` nem `OAuth2PasswordRequestForm`.
+
+O router só orquestra: chama `AuthService.authenticate` e emite o JWT depois do sucesso. O serviço não levanta `HTTPException`; os exception handlers traduzem as exceções de domínio em HTTP.
+
+### Pedido
+
+```json
+{"email": "ana@example.com", "password": "senha-ficticia-ok"}
+```
+
+`email` é canonicalizado em minúsculas (`ANA@Example.com` entra na mesma conta). `password` tem de 1 a 128 caracteres, sem `strip`; não há tamanho mínimo de cadastro, para que senhas antigas ou erradas cheguem ao verificador. Campos extras são rejeitados.
+
+### Resposta 200 (`TokenResponse`)
+
+```json
+{"access_token": "<jwt>", "token_type": "bearer"}
+```
+
+O token segue o [ADR 0006](../decisions/0006-jwt-access-token.md): HS256, expira em 30 minutos, `sub` é o id do usuário e não há email nem roles.
+
+### Status
+
+| Status | Quando | Corpo |
+| --- | --- | --- |
+| 200 | Credenciais válidas e conta ativa | `TokenResponse` |
+| 401 | Email inexistente, senha errada ou conta inativa | `{"detail": "Credenciais inválidas."}` e `WWW-Authenticate: Bearer` |
+| 422 | Corpo inválido, campo ausente, email inválido ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` nem a senha |
+| 500 | Falha interna (hash armazenado corrompido, erro de banco, erro inesperado) | `{"detail": "Erro interno do servidor."}` |
+
+O 401 é idêntico nos três casos, e o serviço faz uma verificação Argon2 em todos para igualar o custo. O 500 é distinto do 401 e não traz hash, SQL, email nem stack trace. O log de erro interno registra só o nome da classe da exceção; nenhum log traz senha, hash, token, segredo JWT ou email.
+
+### Exemplo
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "ana@example.com", "password": "senha-ficticia-ok"}'
+```
+
+### Limites
+
+- JWT assinado não é criptografado: qualquer portador lê as claims. Por isso o token não leva email nem dados sensíveis.
+- Não há refresh token nem revogação. Um token vale até `exp` (30 minutos).
+- Rate limiting e proteção contra força bruta no login são requisito pendente antes de expor a API publicamente (OWASP Authentication Cheat Sheet). Ver [ADR 0006](../decisions/0006-jwt-access-token.md).
+- Nenhuma rota consome o token ainda; não existe dependência de autenticação.
