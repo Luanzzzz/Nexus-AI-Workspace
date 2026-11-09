@@ -1,3 +1,8 @@
+import secrets
+
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings
 
 
@@ -11,3 +16,58 @@ def test_settings_from_environment(monkeypatch):
     assert test_settings.app_name == "Nexus AI Workspace API"
     assert test_settings.environment == "test"
     assert test_settings.debug is True
+
+
+def _strong_secret() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def test_settings_jwt_defaults(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+
+    test_settings = Settings(_env_file=None)
+
+    assert test_settings.jwt_algorithm == "HS256"
+    assert test_settings.jwt_access_token_expire_minutes == 30
+    assert test_settings.jwt_issuer == "nexus-ai-workspace"
+    assert test_settings.jwt_audience == "nexus-api"
+    assert "JWT_SECRET" not in repr(test_settings)
+    assert test_settings.jwt_secret_key.get_secret_value() not in repr(test_settings)
+
+
+def test_settings_rejects_missing_jwt_secret(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_rejects_short_jwt_secret(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "a" * 31)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("placeholder", ["changeme", "CHANGE_ME_LOCAL", "secret", ""])
+def test_settings_rejects_placeholder_jwt_secret(monkeypatch, placeholder):
+    monkeypatch.setenv("JWT_SECRET_KEY", placeholder)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_rejects_other_jwt_algorithm(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("JWT_ALGORITHM", "none")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_rejects_non_positive_expiration(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "0")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

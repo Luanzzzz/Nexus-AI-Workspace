@@ -1,8 +1,15 @@
 """Configuração compartilhada do pytest."""
 
+import os
+import secrets
+
 import pytest
 
-from app.db.session import database_url
+# Segredo forte e efêmero, definido antes de qualquer import de app.core.config
+# (que instancia Settings no import). Variável de ambiente tem prioridade sobre o .env.
+os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
+
+from app.db.session import database_url  # noqa: E402
 
 TEST_DATABASE_NAME = "nexus_ai_test"
 
