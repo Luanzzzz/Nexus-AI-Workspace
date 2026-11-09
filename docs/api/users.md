@@ -1,6 +1,8 @@
 # Contrato de usuário
 
-Ainda não há rotas HTTP de cadastro ou login. O contrato abaixo é o do schema `UserRegister` e da resposta pública `UserResponse` em `backend/app/schemas/user.py`.
+`POST /api/v1/auth/register` cria o usuário. O corpo é `UserRegister`. A resposta de sucesso é `UserResponse`, HTTP 201. Não há rota de login.
+
+O router chama o `AuthService`. O serviço canonicaliza o email, consulta, gera o hash Argon2id fora do event loop e grava. O `UserRepository` não baixa a caixa do email, não recebe senha em claro e não confirma a transação. Ver [ADR 0005](../decisions/0005-transacao-do-cadastro.md).
 
 ## UserRegister
 
@@ -16,23 +18,25 @@ O schema valida a entrada. Ele não calcula hash, não grava no banco e não aut
 
 Erros de validação relevantes: `missing`, `string_too_short`, `string_too_long`, `value_error` no email inválido e `extra_forbidden`.
 
+O HTTP 422 não usa `UserResponse`. O handler central tira `password` e `password_hash` dos detalhes públicos, inclusive quando o valor está aninhado em `input`. O detalhe mantém `loc`, `type` e a mensagem. O handler não registra o `input` da senha.
+
+## Sucesso e duplicidade
+
+HTTP 201 devolve `id`, `name`, `email`, `is_active`, `created_at` e `updated_at`. `password` e `password_hash` não entram nessa resposta. `is_active` sai do default do model (`True`), não do cliente.
+
+O email gravado é o canônico, em minúsculas. `USUARIO@EXAMPLE.COM` e `usuario@example.com` são a mesma conta: o segundo cadastro responde HTTP 409 com `{"detail": "Email já cadastrado."}`. Esse corpo não traz senha nem hash.
+
+A coluna continua `String` com `UNIQUE(email)` e agora também `CHECK (email = lower(email))`. Ver [ADR 0004](../decisions/0004-restricao-de-email-canonico.md).
+
 ## UserResponse
 
 Somente campos públicos: `id`, `name`, `email`, `is_active`, `created_at` e `updated_at`.
 
 `password` e `password_hash` não fazem parte da resposta. O schema aceita objeto do ORM com `from_attributes=True`.
 
-## Pendências de segurança
+## Limites que permanecem
 
 - O limite de 128 caracteres é operacional do Nexus. Aceitar pelo menos 64 caracteres e não exigir composição segue a direção do NIST SP 800-63B-4, mas isto não é conformidade completa com o NIST.
 - O schema aceita senhas longas e triviais, como 15 espaços ou 15 vezes a mesma letra. Isso segue a regra de comprimento. Não vamos acrescentar exigência de símbolo, número ou maiúscula para compensar. Senhas comprometidas ou excessivamente comuns ficam para uma política separada, fora deste schema.
-- O hash Argon2id continua em `hash_password()`. A regra de comprimento do cadastro não altera esse módulo.
+- O hash Argon2id continua em `hash_password()`, que permanece síncrono. A regra de comprimento do cadastro não altera esse módulo.
 - Não existe schema de login. Quando ele for criado, precisa reutilizar a mesma forma canônica de email, senão o endereço em minúsculas do cadastro não encontra a conta.
-- `email` único em `String` no PostgreSQL diferencia maiúsculas de minúsculas. A forma canônica do schema ainda não está garantida na persistência nem nas consultas. Ver a Etapa 2.4 abaixo.
-
-## Requisitos obrigatórios da Etapa 2.4
-
-O endpoint de registro ainda não existe. Estes itens entram nessa etapa, antes de expor o cadastro.
-
-- A resposta HTTP 422 e os logs não podem conter a senha enviada. Hoje `password` é `str`, e `ValidationError.errors()` inclui o valor original em `error["input"]`. O FastAPI serializa esse detalhe por padrão. Um teste de API do endpoint precisa enviar uma senha rejeitada e confirmar que esse valor não aparece no corpo da resposta.
-- A forma canônica do email, o endereço inteiro em minúsculas, precisa ser a mesma na gravação e na consulta de login. Também cabe avaliar uma restrição no banco para impedir que outro caminho de escrita grave dois endereços equivalentes, porque `unique=True` em `String` não faz isso sozinho.

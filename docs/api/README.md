@@ -2,6 +2,6 @@
 
 Documentação da API HTTP.
 
-- [Usuários](users.md) — contrato de `UserRegister` e `UserResponse`, antes das rotas de cadastro e login.
+- [Usuários](users.md) — `POST /api/v1/auth/register`, `UserRegister` e `UserResponse`. Login ainda não existe.
 
 Contratos das demais rotas serão adicionados quando elas existirem.
