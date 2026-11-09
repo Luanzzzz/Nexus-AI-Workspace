@@ -125,6 +125,30 @@ async def test_register_rolls_back_when_persistence_fails():
         assert await UserRepository(session).get_by_email(email) is None
 
 
+@pytest.mark.asyncio
+async def test_register_rolls_back_when_initial_lookup_fails():
+    class _FakeSession:
+        rollbacks = 0
+
+        async def rollback(self) -> None:
+            self.rollbacks += 1
+
+    session = _FakeSession()
+    service = AuthService(session)  # type: ignore[arg-type]
+
+    async def failing_lookup(email: str) -> User | None:
+        del email
+        raise RuntimeError("consulta falhou")
+
+    service.users.get_by_email = failing_lookup  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="consulta falhou"):
+        await service.register(
+            UserRegister(name="Ana Silva", email=_email(), password=_PASSWORD)
+        )
+    assert session.rollbacks == 1
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_register_does_not_hide_unrelated_integrity_error():

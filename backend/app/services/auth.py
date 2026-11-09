@@ -33,15 +33,15 @@ class AuthService:
         # repositório compara o email exatamente como recebe.
         email = data.email.lower()
 
-        existing = await self.users.get_by_email(email)
-        if existing is not None:
-            # A consulta já abriu a transação. Não há escrita para confirmar.
-            await self.session.rollback()
-            raise DuplicateEmailError
-
         try:
+            existing = await self.users.get_by_email(email)
+            if existing is not None:
+                # Sem escrita para confirmar; o except abaixo faz o rollback.
+                raise DuplicateEmailError
+
             # Argon2id é síncrono e lento; a thread libera o event loop.
-            # A transação aberta pela consulta continua até o commit.
+            # A transação aberta pela consulta continua até o commit
+            # (trade-off aceito no MVP: conexão ocupada durante o hash).
             password_hash = await asyncio.to_thread(hash_password, data.password)
             user = await self.users.create_user(
                 name=data.name,

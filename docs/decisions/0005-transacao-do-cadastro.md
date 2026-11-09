@@ -17,4 +17,6 @@ O `AuthService` usa a segunda opção.
 
 O repositório faz `add`, consulta e `flush`. Não dá commit nem rollback. `get_db()` só abre e fecha a sessão. Não há classe `UnitOfWork`. Fechar a sessão desfaz o que o serviço não confirmou; isso é rede de segurança, não a fronteira do caso de uso.
 
+A consulta inicial também fica dentro do `try`: se `get_by_email` falhar, o serviço faz `rollback()` antes de propagar o erro.
+
 A ordem do cadastro é consulta, hash e gravação. O hash Argon2id roda em `asyncio.to_thread` para sair do event loop, mas a transação aberta pela consulta segue aberta durante o hash. Não abrimos outra transação no meio. Cada cadastro concorrente usa a própria `AsyncSession`.
