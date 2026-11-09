@@ -71,7 +71,11 @@ def decode_access_token(token: str) -> AccessTokenClaims:
             issuer=settings.jwt_issuer,
             options={"require": REQUIRED_CLAIMS},
         )
-    except jwt.PyJWTError:
+    except (jwt.PyJWTError, TypeError):
+        # Defesa em profundidade: versões do PyJWT podem deixar escapar TypeError
+        # com claims de tipo incompatível (iat/exp/iss = [] ou {}). No 2.15.1
+        # instalado isso não reproduz (todos viram PyJWTError), mas o contrato é
+        # "todo token inválido vira InvalidTokenError". Sem `except Exception`.
         raise InvalidTokenError() from None
 
     if payload.get("token_type") != ACCESS_TOKEN_TYPE:
