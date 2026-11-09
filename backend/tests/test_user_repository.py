@@ -109,3 +109,27 @@ async def test_create_user_flushes_id_without_commit():
     async with SessionLocal() as session:
         assert await UserRepository(session).get_by_email(email) is None
         await session.rollback()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_by_id_returns_user_or_none_without_commit():
+    async with SessionLocal() as session:
+        repository = UserRepository(session)
+        user = await repository.create_user(
+            name="Pessoa", email=_email(), password_hash=_PASSWORD_HASH
+        )
+        user.is_active = False
+        await session.flush()
+
+        found = await repository.get_by_id(user.id)
+        # Inativo também é devolvido: a regra de acesso não pertence ao repositório.
+        assert found is user
+        assert await repository.get_by_id(2**31 - 1) is None
+        assert session.in_transaction()
+        user_id = user.id
+        await session.rollback()
+
+    async with SessionLocal() as session:
+        assert await UserRepository(session).get_by_id(user_id) is None
+        await session.rollback()

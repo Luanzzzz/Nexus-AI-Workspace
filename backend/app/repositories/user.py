@@ -9,6 +9,13 @@ class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_id(self, user_id: int) -> User | None:
+        # Consulta única pela PK; sem commit, rollback ou consultas extras.
+        # Não filtra is_active: quem decide se a conta pode agir é o chamador.
+        statement = select(User).where(User.id == user_id)
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_by_email(self, email: str) -> User | None:
         # O email já chega canonicalizado; esta consulta não altera a caixa.
         statement = select(User).where(User.email == email)
