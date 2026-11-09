@@ -10,6 +10,12 @@ from app.core.config import settings
 ACCESS_TOKEN_TYPE = "access"
 REQUIRED_CLAIMS = ["sub", "iat", "exp", "iss", "aud", "token_type"]
 
+# users.id é Integer (INT4 do PostgreSQL): o maior id possível é 2**31 - 1.
+MAX_USER_ID = 2**31 - 1
+MAX_SUBJECT_LENGTH = len(str(MAX_USER_ID))
+# Maior timestamp que datetime representa (9999-12-31T23:59:59Z).
+MAX_TIMESTAMP = 253_402_300_799
+
 
 class InvalidTokenError(Exception):
     """Token ausente de requisitos, expirado, adulterado ou malformado.
@@ -30,6 +36,10 @@ class AccessTokenClaims:
 
 def create_access_token(user_id: int, *, now: datetime | None = None) -> str:
     """Emite um access token assinado; `exp` é calculado pelo backend em UTC."""
+    if isinstance(user_id, bool) or not isinstance(user_id, int):
+        raise ValueError("user_id deve ser um inteiro")
+    if not 0 < user_id <= MAX_USER_ID:
+        raise ValueError("user_id deve ser um inteiro positivo válido")
     issued_at = now if now is not None else datetime.now(UTC)
     if issued_at.tzinfo is None:
         raise ValueError("now deve ter timezone")
@@ -67,15 +77,48 @@ def decode_access_token(token: str) -> AccessTokenClaims:
     if payload.get("token_type") != ACCESS_TOKEN_TYPE:
         raise InvalidTokenError()
 
-    subject = payload["sub"]
-    if not isinstance(subject, str) or not subject.isascii() or not subject.isdigit():
-        raise InvalidTokenError()
-    user_id = int(subject)
-    if user_id <= 0:
-        raise InvalidTokenError()
-
+    user_id = _parse_user_id(payload["sub"])
+    issued_at, expires_at = _parse_timestamps(payload["iat"], payload["exp"])
     return AccessTokenClaims(
         user_id=user_id,
-        issued_at=datetime.fromtimestamp(payload["iat"], UTC),
-        expires_at=datetime.fromtimestamp(payload["exp"], UTC),
+        issued_at=issued_at,
+        expires_at=expires_at,
     )
+
+
+def _parse_user_id(subject: object) -> int:
+    """`sub` deve ser str só com dígitos ASCII, sem sinal, no limite de users.id."""
+    if (
+        not isinstance(subject, str)
+        or not 0 < len(subject) <= MAX_SUBJECT_LENGTH
+        or not subject.isascii()
+        or not subject.isdigit()
+    ):
+        raise InvalidTokenError()
+    user_id = int(subject)
+    if not 0 < user_id <= MAX_USER_ID:
+        raise InvalidTokenError()
+    return user_id
+
+
+def _parse_timestamps(iat: object, exp: object) -> tuple[datetime, datetime]:
+    """`iat`/`exp` devem ser int (não bool/float/str), no intervalo suportado.
+
+    O PyJWT aceita strings numéricas, floats e valores gigantes nessas claims;
+    `create_access_token` só emite int, então só int é aceito aqui.
+    """
+    issued, expires = _checked_timestamp(iat), _checked_timestamp(exp)
+    if expires <= issued:
+        raise InvalidTokenError()
+    try:
+        return datetime.fromtimestamp(issued, UTC), datetime.fromtimestamp(expires, UTC)
+    except (TypeError, ValueError, OSError, OverflowError):
+        raise InvalidTokenError() from None
+
+
+def _checked_timestamp(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidTokenError()
+    if not 0 < value <= MAX_TIMESTAMP:
+        raise InvalidTokenError()
+    return value
