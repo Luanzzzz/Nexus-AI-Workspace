@@ -1,3 +1,4 @@
+import os
 import secrets
 
 import pytest
@@ -68,6 +69,57 @@ def test_settings_rejects_other_jwt_algorithm(monkeypatch):
 def test_settings_rejects_non_positive_expiration(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
     monkeypatch.setenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "0")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_debug_defaults_to_false(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.delenv("DEBUG", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    test_settings = Settings(_env_file=None)
+
+    assert test_settings.debug is False
+    assert test_settings.environment == "development"
+
+
+def test_settings_rejects_debug_in_production(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "true")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    message = str(exc_info.value)
+    assert "DEBUG deve ser False" in message
+    assert os.environ["JWT_SECRET_KEY"] not in message
+
+
+def test_settings_accepts_production_without_debug(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "false")
+
+    test_settings = Settings(_env_file=None)
+
+    assert test_settings.environment == "production"
+    assert test_settings.debug is False
+
+
+def test_settings_accepts_debug_in_development(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("DEBUG", "true")
+
+    assert Settings(_env_file=None).debug is True
+
+
+def test_settings_rejects_unknown_environment(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("ENVIRONMENT", "prod")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)

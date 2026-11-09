@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -29,8 +29,8 @@ JWT_PLACEHOLDER_SECRETS = frozenset(
 configuações gerais da aplicação
 Attributes:
     app_name: The name of the application.
-    environment: The environment of the application.
-    debug: Whether the application is in debug mode.
+    environment: development, test ou production (ENVIRONMENT).
+    debug: Modo debug (DEBUG). Padrão False; proibido em production.
     postgres_user: The username for the PostgreSQL database.
     postgres_password: The password for the PostgreSQL database.
     postgres_db: The database name for the PostgreSQL database.
@@ -44,7 +44,7 @@ Attributes:
 
 class Settings(BaseSettings):
     app_name: str = "Nexus AI Workspace API"
-    environment: str = "development"
+    environment: Literal["development", "test", "production"] = "development"
     debug: bool = False
     postgres_user: str | None = None
     postgres_password: str | None = None
@@ -84,6 +84,12 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("JWT_ACCESS_TOKEN_EXPIRE_MINUTES deve ser positivo")
         return value
+
+    @model_validator(mode="after")
+    def _forbid_debug_in_production(self) -> "Settings":
+        if self.environment == "production" and self.debug:
+            raise ValueError("DEBUG deve ser False quando ENVIRONMENT=production")
+        return self
 
 
 settings = Settings()

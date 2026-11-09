@@ -28,6 +28,15 @@ POSTGRES_DB=nexus_ai_test python -m alembic check
 
 Dentro de `backend/`, o mesmo teste de schema é `tests/unit/test_user_schema.py`. O `alembic.ini` da raiz aponta para `backend/alembic`.
 
+## Ambiente e modo debug
+
+A configuração vem de variáveis de ambiente ou do `.env` da raiz (modelo em `.env.example`):
+
+- `ENVIRONMENT`: `development` (padrão), `test` ou `production`.
+- `DEBUG`: padrão `false`. Com `true`, o Starlette devolve o traceback nas respostas 500.
+
+Produção exige `DEBUG=false`: com `ENVIRONMENT=production` e `DEBUG=true` a aplicação recusa iniciar. Ver também o [ADR 0006](docs/decisions/0006-jwt-access-token.md).
+
 ## Estrutura do monorepo
 
 ```text
