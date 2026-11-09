@@ -1,6 +1,8 @@
 """Testes de emissão/validação de JWT, sem banco de dados."""
 
 import base64
+import hashlib
+import hmac
 import inspect
 import json
 from datetime import UTC, datetime, timedelta
@@ -40,6 +42,14 @@ def _payload(**overrides):
 
 def _encode(payload, key=SECRET, algorithm="HS256"):
     return jwt.encode(payload, key, algorithm=algorithm)
+
+
+def _forge(payload) -> str:
+    """Token HS256 assinado com a chave correta, sem as checagens do jwt.encode."""
+    signing_input = f"{_b64({'alg': 'HS256', 'typ': 'JWT'})}.{_b64(payload)}"
+    digest = hmac.new(SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
+    signature = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return f"{signing_input}.{signature}"
 
 
 def _fresh_payload(**overrides):
@@ -203,6 +213,34 @@ def test_malformed_timestamps_with_valid_signature_rejected(overrides):
         decode_access_token(_encode(_fresh_payload(**overrides)))
 
     assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "claim", ["iat", "exp", "iss", "aud", "nbf", "token_type", "sub"]
+)
+@pytest.mark.parametrize("value", [[], {}], ids=["list", "dict"])
+def test_non_scalar_claims_with_valid_signature_rejected(claim, value):
+    # jwt.encode recusa iss não-string; assina na mão para forjar o token.
+    token = _forge(_fresh_payload(**{claim: value}))
+
+    with pytest.raises(InvalidTokenError) as exc_info:
+        decode_access_token(token)
+
+    assert exc_info.value.__cause__ is None
+    assert str(exc_info.value) == "Token inválido"
+
+
+def test_type_error_from_pyjwt_decode_maps_to_invalid_token(monkeypatch):
+    def raise_type_error(*args, **kwargs):
+        raise TypeError("claim com tipo incompatível")
+
+    monkeypatch.setattr(tokens.jwt, "decode", raise_type_error)
+
+    with pytest.raises(InvalidTokenError) as exc_info:
+        decode_access_token("a.b.c")
+
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
 
 
 def test_exp_not_after_iat_rejected():
