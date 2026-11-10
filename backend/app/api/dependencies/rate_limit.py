@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request, status
 
 from app.api.exception_handlers import RATE_LIMITED_DETAIL
 from app.core.config import settings
+from app.core.emailcanon import email_rate_limit_key
 from app.core.rate_limit import limiter
 from app.core.request_context import client_ip
 
@@ -41,7 +42,7 @@ async def _json_email(request: Request) -> str | None:
     email = payload.get("email")
     if not isinstance(email, str):
         return None
-    return email.strip().lower() or None
+    return email_rate_limit_key(email)
 
 
 async def login_rate_limit(request: Request) -> None:

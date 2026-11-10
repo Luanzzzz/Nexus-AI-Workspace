@@ -10,6 +10,7 @@ from pydantic import (
     StringConstraints,
 )
 
+from app.core.emailcanon import canonicalize_email
 from app.core.text import reject_control_characters
 
 
@@ -33,7 +34,7 @@ class RegisterResponse(BaseModel):
 CanonicalEmail = Annotated[
     EmailStr,
     AfterValidator(reject_control_characters),
-    AfterValidator(str.lower),
+    AfterValidator(canonicalize_email),
 ]
 
 SafeName = Annotated[
@@ -45,13 +46,11 @@ SafeName = Annotated[
 RegisterPassword = Annotated[
     str,
     StringConstraints(min_length=15, max_length=128, strip_whitespace=False),
-    AfterValidator(reject_control_characters),
 ]
 
 LoginPassword = Annotated[
     str,
     StringConstraints(min_length=1, max_length=128, strip_whitespace=False),
-    AfterValidator(reject_control_characters),
 ]
 
 
