@@ -169,6 +169,8 @@ Cada residual: problema, onde, reproduzir, impacto, por que ficou, condição de
 | B6 | libpq cru (`PGconn`), socket v3, subprocess | C / OS | `psycopg.pq.PGconn.connect` | Fora do Python | Patch não alcança | Job `unit` porta 1; pytest-socket | Subprocesso passa no silêncio |
 | M1 | Guard vira HTTP 500 no TestClient | middleware 500 | login sem marcador | Teste “500” passa pelo motivo errado | Fora desta rodada | `pytest.fail` no teardown | pytester no login |
 | G1 | `PGHOSTADDR` desvia o host da libpq | env | `PGHOSTADDR` ≠ `POSTGRES_HOST` | Host efetivo não é o da URL | Só `host` nos cparams | Abortar se `PGHOSTADDR` existir | Setup falha com o env |
+| G1-hostaddr | `hostaddr` no conninfo/URL desvia o host | cparams | `host=127.0.0.1 hostaddr=192.0.2.1` | libpq ignora `host` | Amplia G1; o guard lê só `host` | Recusar `hostaddr` no connect | DSN com hostaddr é bloqueado |
+| R19/R20 | Símbolos privados do conftest liberam o banco | `tests.conftest` | `_original_psycopg_connect` / `_allow_marked_connect.set(True)` | Conexão de propósito | Uso deliberado de API interna | Grep no CI fora do conftest | Chamada direta conecta |
 | G2 | Integration monta URL/`engine` próprio | `create_engine` | `database=nexus_ai` no connect | Mitigado: `DefaultDialect.connect` recusa dbname/host efetivos ≠ `nexus_ai_test` local | Caiu de graça com a checagem no connect | — | `test_integration_rejects_wrong_database_name` |
 
 ## 10. Conclusão

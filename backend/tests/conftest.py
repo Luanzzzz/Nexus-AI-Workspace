@@ -11,6 +11,7 @@ import psycopg
 import pytest
 from psycopg.conninfo import conninfo_to_dict
 from sqlalchemy.engine.default import DefaultDialect
+from sqlalchemy.pool.base import Pool
 
 from app.core.rate_limit import limiter
 
@@ -34,6 +35,7 @@ _allow_marked_connect: ContextVar[bool] = ContextVar(
 )
 _guards_installed = False
 _original_dialect_connect = DefaultDialect.connect
+_original_pool_connect = Pool.connect
 _original_psycopg_connect = psycopg.connect
 _original_connection_connect = psycopg.Connection.connect
 _original_async_connection_connect = psycopg.AsyncConnection.connect
@@ -110,11 +112,18 @@ async def _guarded_async_connection_connect(*cargs: object, **cparams: object):
     return await _original_async_connection_connect(*cargs, **cparams)
 
 
+def _guarded_pool_connect(self: Pool):
+    if not _allow_marked_connect.get():
+        raise UnmarkedDatabaseAccessError()
+    return _original_pool_connect(self)
+
+
 def _install_connection_guards() -> None:
     global _guards_installed
     if _guards_installed:
         return
     DefaultDialect.connect = _guarded_dialect_connect  # type: ignore[method-assign]
+    Pool.connect = _guarded_pool_connect  # type: ignore[method-assign]
     psycopg.connect = _guarded_psycopg_connect  # type: ignore[assignment]
     psycopg.Connection.connect = _guarded_connection_connect  # type: ignore[method-assign]
     psycopg.AsyncConnection.connect = _guarded_async_connection_connect  # type: ignore[method-assign]

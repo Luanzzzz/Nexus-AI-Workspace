@@ -3,10 +3,10 @@
 import psycopg
 import pytest
 from psycopg import connect as imported_psycopg_connect
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
-from app.db.session import database_url
+from app.db.session import SessionLocal, database_url
 from tests.conftest import (
     UnmarkedDatabaseAccessError,
     UnsafeTestDatabaseError,
@@ -14,6 +14,7 @@ from tests.conftest import (
 )
 
 _CONNINFO = "host=127.0.0.1 port=1 dbname=nexus_ai_test user=nobody password=invalid"
+_SAFE_URL = "postgresql+psycopg://nobody:invalid@127.0.0.1:1/nexus_ai_test"
 
 
 @pytest.fixture(scope="module")
@@ -64,7 +65,7 @@ def test_unmarked_imported_psycopg_connect_is_blocked():
 
 
 def test_unmarked_sync_create_engine_is_blocked():
-    sync_engine = create_engine(database_url)
+    sync_engine = create_engine(_SAFE_URL)
     try:
         with pytest.raises(
             UnmarkedDatabaseAccessError, match="sem @pytest.mark.integration"
@@ -75,7 +76,7 @@ def test_unmarked_sync_create_engine_is_blocked():
 
 
 def test_unmarked_sync_create_engine_nullpool_is_blocked():
-    sync_engine = create_engine(database_url, poolclass=NullPool)
+    sync_engine = create_engine(_SAFE_URL, poolclass=NullPool)
     try:
         with pytest.raises(
             UnmarkedDatabaseAccessError, match="sem @pytest.mark.integration"
@@ -95,6 +96,22 @@ def test_session_scoped_fixture_cannot_open_database(
     session_scope_guard_blocks_connect: bool,
 ):
     assert session_scope_guard_blocks_connect
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_integration_warms_app_pool():
+    async with SessionLocal() as session:
+        await session.execute(text("SELECT 1"))
+
+
+@pytest.mark.asyncio
+async def test_unmarked_cannot_reuse_app_pool_after_integration():
+    with pytest.raises(
+        UnmarkedDatabaseAccessError, match="sem @pytest.mark.integration"
+    ):
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
 
 
 @pytest.mark.integration
