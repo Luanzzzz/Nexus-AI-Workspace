@@ -12,3 +12,4 @@ Cada ADR deve registrar um problema, as opções consideradas e a decisão tomad
 - [0004: restrição de email canônico](0004-restricao-de-email-canonico.md)
 - [0005: transação do cadastro sem session.begin()](0005-transacao-do-cadastro.md)
 - [0006: JWT de acesso com PyJWT e HS256](0006-jwt-access-token.md)
+- [0007: rate limit, proxy confiável e cadastro genérico](0007-rate-limit-proxy-e-cadastro-generico.md)

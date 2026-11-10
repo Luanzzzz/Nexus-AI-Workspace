@@ -1,6 +1,6 @@
 # Contrato de usuário
 
-`POST /api/v1/auth/register` cria o usuário. O corpo é `UserRegister`. A resposta de sucesso é `UserResponse`, HTTP 201. O login está descrito em [Login](#login).
+`POST /api/v1/auth/register` cria o usuário quando o email ainda não existe. O corpo é `UserRegister`. A resposta HTTP é **a mesma** para email novo e já cadastrado: 201 com `{"detail": "Cadastro processado."}` (`RegisterResponse`). Não há 409. O login está descrito em [Login](#login). Ver [ADR 0007](../decisions/0007-rate-limit-proxy-e-cadastro-generico.md).
 
 O router chama o `AuthService`. O serviço canonicaliza o email, consulta, gera o hash Argon2id fora do event loop e grava. O `UserRepository` não baixa a caixa do email, não recebe senha em claro e não confirma a transação. Ver [ADR 0005](../decisions/0005-transacao-do-cadastro.md).
 
@@ -12,7 +12,7 @@ O schema valida a entrada. Ele não calcula hash, não grava no banco e não aut
 
 | Campo | Política |
 | --- | --- |
-| `name` | Texto de exibição. Espaços nas extremidades são removidos. Depois disso, mínimo 1 e máximo 150 caracteres. Uma palavra, acentos e hífens são aceitos. |
+| `name` | Texto de exibição. Espaços nas extremidades são removidos. Depois disso, mínimo 1 e máximo 150 caracteres. Uma palavra, acentos e hífens são aceitos. Caracteres de controle (NUL e categoria Unicode Cc) são rejeitados com 422. |
 | `email` | `EmailStr`, com `email-validator` declarado em `backend/pyproject.toml`. O endereço inteiro é guardado em minúsculas. Ver [ADR 0003](../decisions/0003-canonicalizacao-de-email-no-cadastro.md). |
 | `password` | Mínimo 15 e máximo 128 caracteres. Sem exigência de símbolo, número ou maiúscula. Sem `strip`, sem conversão para minúsculas e sem remoção silenciosa de caracteres. Espaços e Unicode permanecem como foram enviados, dentro do limite de comprimento. |
 
@@ -22,11 +22,18 @@ O HTTP 422 não usa `UserResponse`. O handler central tira `password` e `passwor
 
 ## Sucesso e duplicidade
 
-HTTP 201 devolve `id`, `name`, `email`, `is_active`, `created_at` e `updated_at`. `password` e `password_hash` não entram nessa resposta. `is_active` sai do default do model (`True`), não do cliente.
+HTTP 201 devolve `{"detail": "Cadastro processado."}` tanto para conta nova quanto para email já cadastrado. `password` e `password_hash` não entram nessa resposta. O cliente não recebe `id` nem os demais campos públicos; o próximo passo é o login. `is_active` no banco sai do default do model (`True`), não do cliente.
 
-O email gravado é o canônico, em minúsculas. `USUARIO@EXAMPLE.COM` e `usuario@example.com` são a mesma conta: o segundo cadastro responde HTTP 409 com `{"detail": "Email já cadastrado."}`. Esse corpo não traz senha nem hash.
+O email gravado é o canônico, em minúsculas. `USUARIO@EXAMPLE.COM` e `usuario@example.com` são a mesma conta. O segundo cadastro **não** devolve 409: status, corpo e o custo Argon2id são os mesmos do primeiro. A unicidade no banco impede duas linhas.
 
 A coluna continua `String` com `UNIQUE(email)` e agora também `CHECK (email = lower(email))`. Ver [ADR 0004](../decisions/0004-restricao-de-email-canonico.md).
+
+| Status | Quando | Corpo |
+| --- | --- | --- |
+| 201 | Email novo ou já cadastrado | `{"detail": "Cadastro processado."}` |
+| 422 | Corpo inválido, inclusive caractere de controle | `detail` com `loc`, `type` e `msg`, sem `input` |
+| 429 | Limite por IP | `{"detail": "Muitas tentativas. Tente novamente mais tarde."}` e `Retry-After` |
+| 500 | Falha interna | `{"detail": "Erro interno do servidor."}` e `X-Request-ID` |
 
 ## UserResponse
 
@@ -67,12 +74,13 @@ O token segue o [ADR 0006](../decisions/0006-jwt-access-token.md): HS256, expira
 
 | Status | Quando | Corpo |
 | --- | --- | --- |
-| 200 | Credenciais válidas e conta ativa | `TokenResponse` |
-| 401 | Email inexistente, senha errada ou conta inativa | `{"detail": "Credenciais inválidas."}` e `WWW-Authenticate: Bearer` |
-| 422 | Corpo inválido, campo ausente, email inválido ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` nem a senha |
-| 500 | Falha interna (hash armazenado corrompido, erro de banco, erro inesperado) | `{"detail": "Erro interno do servidor."}` |
+| 200 | Credenciais válidas e conta ativa | `TokenResponse` e `Cache-Control: no-store` |
+| 401 | Email inexistente, senha errada ou conta inativa | `{"detail": "Credenciais inválidas."}`, `WWW-Authenticate: Bearer` e `Cache-Control: no-store` |
+| 422 | Corpo inválido, campo ausente, email inválido, caractere de controle ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` nem a senha |
+| 429 | Limite de tentativas por IP ou por email | `{"detail": "Muitas tentativas. Tente novamente mais tarde."}` e `Retry-After` |
+| 500 | Falha interna (hash armazenado corrompido, erro de banco, erro inesperado) | `{"detail": "Erro interno do servidor."}` e `X-Request-ID` |
 
-O 401 é idêntico nos três casos, e o serviço faz uma verificação Argon2 em todos para igualar o custo. O 500 é distinto do 401 e não traz hash, SQL, email nem stack trace. O log de erro interno registra só o nome da classe da exceção; nenhum log traz senha, hash, token, segredo JWT ou email.
+O 401 é idêntico nos três casos, e o serviço faz uma verificação Argon2 em todos para igualar o custo. O 500 é distinto do 401 e não traz hash, SQL, email nem stack trace. O log de erro interno traz `request_id` e o tipo da exceção; um filtro remove senha, hash, token, email, DSN e parâmetros SQL. O engine usa `hide_parameters=True`.
 
 ### Exemplo
 
@@ -86,8 +94,9 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 - JWT assinado não é criptografado: qualquer portador lê as claims. Por isso o token não leva email nem dados sensíveis.
 - Não há refresh token nem revogação. Um token vale até `exp` (30 minutos).
-- **O login não está pronto para exposição pública.** Pendentes: controle de taxa (força bruta, OWASP Authentication Cheat Sheet) e controle de concorrência das verificações Argon2id, que custam CPU e memória. Não há rate limiting nesta etapa. Redis não será introduzido agora; os controles proporcionais dependem da hospedagem do MVP. Ver [ADR 0006](../decisions/0006-jwt-access-token.md).
-- Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização); com debug o 500 vazaria traceback em vez do corpo genérico.
+- Há rate limit em memória por processo (login por IP e por email; cadastro por IP). Vários workers uvicorn não compartilham o teto. Ver [ADR 0007](../decisions/0007-rate-limit-proxy-e-cadastro-generico.md).
+- O teto de concorrência do Argon2id continua o do executor padrão do asyncio; precisa de dimensionamento na VPS de destino.
+- Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização). Em production as docs OpenAPI ficam desligadas. O 500 do cliente é sempre JSON genérico; o traceback fica só no log, já filtrado.
 - O token só é aceito com `sub` inteiro positivo (até 2147483647) e `iat`/`exp` inteiros válidos; qualquer outra forma é rejeitada como token inválido.
 - A única rota que consome o token é [`GET /api/v1/auth/me`](#usuário-atual).
 
@@ -113,7 +122,7 @@ Só campos públicos; `password` e `password_hash` nunca saem.
 | 401 | Token ausente, vazio, malformado, esquema que não é Bearer, assinatura inválida, expirado, usuário inexistente ou inativo | `{"detail": "Não autenticado."}` e `WWW-Authenticate: Bearer` |
 | 500 | Banco indisponível ou erro inesperado | `{"detail": "Erro interno do servidor."}` |
 
-O 401 é idêntico em todos os casos e não diferencia token inválido de conta removida ou desativada. Não se usa 403. Com token inválido, o banco nem é consultado. Falha do banco não vira 401: segue o tratamento HTTP 500 existente, sem SQL, credenciais nem token na resposta ou no log.
+O 401 é idêntico em todos os casos e não diferencia token inválido de conta removida ou desativada. Não se usa 403. Com token inválido, o banco nem é consultado. Falha do banco não vira 401: segue o tratamento HTTP 500 existente, sem SQL, credenciais nem token na resposta. O log traz `request_id` e o tipo da exceção, sem parâmetros SQL.
 
 ### Exemplo
 
@@ -125,4 +134,5 @@ curl http://localhost:8000/api/v1/auth/me \
 ### Limites
 
 - Um token de usuário removido ou desativado deixa de valer na próxima requisição, mas não há revogação por token nem refresh token: um token válido de conta ativa vale até `exp`.
+- A resposta 200 inclui `Cache-Control: no-store`.
 - Sem RBAC, roles ou workspace nesta etapa.

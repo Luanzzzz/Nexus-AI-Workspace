@@ -22,3 +22,5 @@ A senha não segue essa normalização. O comprimento de 15 a 128 caracteres tam
 ## Desdobramento
 
 A Etapa 2.4 manteve `String` e `UNIQUE(email)` e acrescentou `CHECK (email = lower(email))`. O registro dessa restrição está no [ADR 0004](0004-restricao-de-email-canonico.md). A fronteira da transação de cadastro está no [ADR 0005](0005-transacao-do-cadastro.md).
+
+Campos de texto (`name`, `email`, `password`) rejeitam caracteres de controle Unicode (categoria Cc, inclusive NUL). Isso evita 500 do PostgreSQL. Não há NFKC nem política de confusáveis no MVP; `ｆｕｌｌ@example.com` e `full@example.com` continuam identidades distintas.
