@@ -232,9 +232,7 @@ async def test_authenticate_commits_read_before_verify():
     auth_module._verify_blocking = tracking_verify
     try:
         with pytest.raises(InvalidCredentialsError):
-            await service.authenticate(
-                LoginRequest(email=_email(), password=_PASSWORD)
-            )
+            await service.authenticate(LoginRequest(email=_email(), password=_PASSWORD))
     finally:
         auth_module._verify_blocking = original_verify
     assert fake.commits == 1
