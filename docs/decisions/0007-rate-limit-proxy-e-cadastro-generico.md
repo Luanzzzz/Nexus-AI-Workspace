@@ -20,7 +20,7 @@ A auditoria da Fase 2 (Authentication) mostrou três riscos de exposição públ
 - **`TRUSTED_PROXIES` vazio por padrão.** O uvicorn **não** usa o default `forwarded_allow_ips=127.0.0.1`. A entrada `python -m app` liga `proxy_headers` só quando a lista tem IPs, com `--forwarded-allow-ips` igual a ela (nunca `*`). Com lista vazia, `proxy_headers=False`: um `X-Forwarded-For` forjado a partir do loopback não reescreve `request.client`.
 - **Cadeia XFF da direita.** Se o peer TCP está na lista, o app percorre os hops da direita para a esquerda e usa o primeiro que não é confiável. O hop da esquerda é controlado pelo cliente e é ignorado quando o proxy anexa.
 - **Cadastro genérico:** `POST /auth/register` devolve sempre HTTP 201 e `{"detail": "Cadastro processado."}`, para email novo e já cadastrado. O hash Argon2id roda nos dois caminhos. A unicidade continua no `UNIQUE(email)`; corrida vira o mesmo corpo, sem duplicar linha.
-- **Chave de email canônica:** a mesma função do cadastro (`email-validator` + minúsculas), para `User@Example.com` e `user@example.com` compartilharem o teto.
+- **Chave de email canônica:** a mesma função do login/cadastro — `EmailStr` do Pydantic seguido de minúsculas (`app.core.emailcanon.canonicalize_email`). Não usar `email_validator.validate_email` isolado: ele recusa o formato RFC 5322 `Nome <user@host>` e o fallback `strip().lower()` geraria uma chave por nome de exibição, enquanto o `EmailStr` do schema aceita o formato e autentica a vítima. Alinhar à canonicalização do schema (em vez de recusar name-addr no `CanonicalEmail`) preserva o contrato HTTP atual e faz `Ana <victim@x>` e `Bruno <victim@x>` compartilharem o teto de 5/60 s.
 
 ## Trade-offs
 

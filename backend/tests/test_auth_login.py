@@ -137,6 +137,16 @@ def test_login_failures_share_identical_401(active_user, caplog):
     _assert_no_leaks(caplog.text)
 
 
+def test_login_nul_password_returns_401():
+    response = _CLIENT.post(
+        _URL,
+        json={"email": "a@example.com", "password": "senha\x00ficticia-ok"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Credenciais inválidas."}
+
+
 @pytest.mark.parametrize(
     "body",
     [

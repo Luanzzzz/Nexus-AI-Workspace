@@ -175,3 +175,14 @@ def test_settings_rejects_unknown_environment(monkeypatch):
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", ["*", " * ", "10.0.0.1,*", "*,10.0.0.1"])
+def test_settings_rejects_star_trusted_proxies(monkeypatch, value):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("TRUSTED_PROXIES", value)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "TRUSTED_PROXIES não pode ser *" in str(exc_info.value)

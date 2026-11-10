@@ -190,6 +190,14 @@ class Settings(BaseSettings):
             raise ValueError("DB_MAX_OVERFLOW não pode ser negativo")
         return value
 
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _validate_trusted_proxies(cls, value: str) -> str:
+        tokens = [token.strip() for token in value.split(",")]
+        if any(token == "*" for token in tokens):
+            raise ValueError("TRUSTED_PROXIES não pode ser *")
+        return value
+
     @model_validator(mode="after")
     def _forbid_debug_in_production(self) -> Settings:
         if self.environment == "production" and self.debug:

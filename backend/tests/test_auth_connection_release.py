@@ -9,10 +9,12 @@ import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.api.dependencies.database import get_db
 from app.core.security import hash_password
 from app.core.tokens import create_access_token
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, database_url
 from app.main import app
 from app.models.user import User
 from app.repositories.user import UserRepository
@@ -120,6 +122,68 @@ async def test_me_is_not_blocked_by_slow_login_hash(stored_user, monkeypatch):
         me_response = await me()
         me_elapsed = asyncio.get_running_loop().time() - started
         login_response = await login_task
+
+    assert me_response.status_code == 200
+    assert me_elapsed < 0.25
+    assert login_response.status_code == 200
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_me_with_pool_size_one_not_blocked_by_slow_login(
+    stored_user, monkeypatch
+):
+    user_id, email = stored_user
+    original_verify = auth_module._verify_blocking
+
+    def slow_verify(password: str, password_hash: str | None) -> bool:
+        time.sleep(0.4)
+        return original_verify(password, password_hash)
+
+    monkeypatch.setattr(auth_module, "_verify_blocking", slow_verify)
+    tight_engine = create_async_engine(
+        database_url,
+        hide_parameters=True,
+        pool_pre_ping=True,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=1,
+    )
+    TightSession = async_sessionmaker(bind=tight_engine, expire_on_commit=False)
+
+    async def tight_db() -> AsyncIterator[AsyncSession]:
+        async with TightSession() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = tight_db
+    token = create_access_token(user_id)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+
+            async def login() -> httpx.Response:
+                return await client.post(
+                    "/api/v1/auth/login",
+                    json={"email": email, "password": _PASSWORD},
+                )
+
+            async def me() -> httpx.Response:
+                await asyncio.sleep(0.05)
+                return await client.get(
+                    "/api/v1/auth/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+
+            login_task = asyncio.create_task(login())
+            started = asyncio.get_running_loop().time()
+            me_response = await me()
+            me_elapsed = asyncio.get_running_loop().time() - started
+            login_response = await login_task
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await tight_engine.dispose()
 
     assert me_response.status_code == 200
     assert me_elapsed < 0.25

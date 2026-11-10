@@ -1,12 +1,20 @@
 """Canonicalização de email alinhada ao cadastro (EmailStr + lower)."""
 
-from email_validator import EmailNotValidError, validate_email
+from pydantic import EmailStr, TypeAdapter, ValidationError
+
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 
 def canonicalize_email(value: str) -> str:
-    """Normaliza como o schema de cadastro/login (IDNA/NFC + minúsculas)."""
-    result = validate_email(value, check_deliverability=False)
-    return str(result.normalized).lower()
+    """Mesma normalização do EmailStr de login/cadastro, em minúsculas.
+
+    O EmailStr do Pydantic aceita addr-spec e o formato RFC 5322
+    ``Nome <user@host>`` e devolve só o endereço. ``email_validator``
+    isolado recusa o segundo formato; a chave de rate limit usa esta
+    função para não divergir do schema.
+    """
+    normalized = _EMAIL_ADAPTER.validate_python(value)
+    return str(normalized).lower()
 
 
 def email_rate_limit_key(value: str) -> str | None:
@@ -15,5 +23,5 @@ def email_rate_limit_key(value: str) -> str | None:
         return None
     try:
         return canonicalize_email(stripped)
-    except EmailNotValidError:
+    except ValidationError:
         return stripped.lower() or None

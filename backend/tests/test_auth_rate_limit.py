@@ -139,6 +139,36 @@ def test_login_email_rate_limit_uses_canonical_email(enable_limits):
     assert blocked.status_code == 429
 
 
+def test_name_addr_rate_limit_key_matches_bare_email():
+    victim = "victim@example.com"
+    assert email_rate_limit_key(f"Ana <{victim}>") == victim
+    assert email_rate_limit_key("Outro <Victim@Example.com>") == victim
+    assert email_rate_limit_key(victim) == victim
+
+
+def test_login_name_addr_display_names_share_email_limit(monkeypatch):
+    monkeypatch.setattr(settings, "auth_rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "auth_login_per_ip_limit", 100)
+    monkeypatch.setattr(settings, "auth_login_per_email_limit", 5)
+    monkeypatch.setattr(settings, "auth_rate_limit_window_seconds", 60)
+    limiter.reset()
+    victim = f"victim-{uuid4().hex}@example.com"
+    names = ("Ana", "Bruno", "Carla", "Diego", "Elena", "Fabio")
+    try:
+        statuses = [
+            _CLIENT.post(
+                "/api/v1/auth/login",
+                json=_login_payload(f"{name} <{victim}>"),
+            ).status_code
+            for name in names
+        ]
+    finally:
+        limiter.reset()
+
+    assert statuses[:5] == [401, 401, 401, 401, 401]
+    assert statuses[5] == 429
+
+
 def test_xff_used_only_from_trusted_proxy(monkeypatch):
     monkeypatch.setattr(settings, "trusted_proxies", "10.0.0.1")
     scope = {

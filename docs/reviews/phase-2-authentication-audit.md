@@ -51,7 +51,7 @@ python -m alembic check
 python -m pytest
 ```
 
-A suíte original na SHA auditada: 222 passed. Depois da primeira correção: 245. Esta revisão do Verificador acrescenta regressões de G1–G4 e G6–G10. Os testes de integração só rodam se o banco for `nexus_ai_test` **e** o host for `127.0.0.1`/`localhost`/`::1`.
+A suíte original na SHA auditada: 222 passed. Depois da primeira correção: 245. Na SHA `91d13e8` (revisão G1–G10): 261 passed. Nesta correção do Reviewer (chave EmailStr + name-addr, `TRUSTED_PROXIES=*`, NUL no login, `/me` com pool=1): **269 passed** (ordem de arquivo e `--randomly-seed`). Os testes de integração só rodam se o banco for `nexus_ai_test` **e** o host for `127.0.0.1`/`localhost`/`::1`.
 
 ## 7. Achados
 
@@ -79,6 +79,7 @@ IDs consolidados (sem duplicar A6+QA1+I1, A4, etc.). Cada item: problema, onde, 
 | A10 | P3 | `register` instanciava o service na rota | `api/v1/auth.py` | override desigual | Testes assimétricos | `Depends(get_auth_service)` | suíte HTTP de register |
 | G1 | P2 exp | Uvicorn default honra XFF no loopback; app lia o hop da esquerda | `uvicorn` + `request_context.py` | peer 127.0.0.1 + XFF variando → 201×N | Bypass do rate limit por IP | `python -m app` alinha `proxy_headers`; cadeia da direita | `test_uvicorn_empty_trusted_proxies_ignores_forged_xff` |
 | M6 | P3 | Rollback do `IntegrityError` sem teste | `services/auth.py` | mutante tira o rollback e a suíte passa | Sessão suja se o close falhar | teste de fake session conta rollback | `test_register_rolls_back_on_integrity_error` |
+| G8 | P1 | `email_rate_limit_key` via `validate_email` recusa `Nome <victim@host>` e o fallback vira chave por nome | `core/emailcanon.py` | 6 logins com nomes distintos, mesmo addr-spec, todos 401 | Bypass do teto 5/60 s (ADR 0007) | Mesmo `EmailStr` do login/cadastro + lower; ADR justifica não recusar name-addr | `test_login_name_addr_display_names_share_email_limit` |
 
 **Concordâncias e discordâncias com os relatórios**
 
@@ -99,8 +100,8 @@ O que mudou (código) e como foi testado:
 4. Validação JWT por whitespace, placeholder repetido e entropia, sem ecoar o valor.
 5. Argon2id com constantes iguais à política anterior + teste de parâmetros.
 6. Pool explícito + `pool_pre_ping`.
-7. Hash antes do SQL no cadastro; `commit` de leitura antes do verify no login; testes de ordem e `/me` concorrente com verify lento.
-8. Rate limit em memória + 429; XFF só com proxy confiável; `python -m app` alinha o uvicorn; hops da direita; poda de chaves; email canônico.
+7. Hash antes do SQL no cadastro; `commit` de leitura antes do verify no login; testes de ordem e `/me` concorrente com verify lento, inclusive com `pool_size=1`/`max_overflow=0`.
+8. Rate limit em memória + 429; XFF só com proxy confiável; `python -m app` alinha o uvicorn; hops da direita; poda de chaves; chave de email = `EmailStr` + lower (name-addr compartilhado); `TRUSTED_PROXIES=*` recusado na config.
 9. Register genérico 201; testes HTTP e UNIQUE sob corrida mantidos no service.
 10. CI GitHub Actions.
 11. README, ADRs 0003–0007, `docs/api/users.md`.
