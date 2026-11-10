@@ -3,7 +3,7 @@
 
 class DuplicateEmailError(Exception):
     # O email canônico já pertence a um usuário.
-    # Sem senha, sem hash e sem o endereço: o router escolhe o HTTP 409.
+    # Sem senha, sem hash e sem o endereço: o router responde como no sucesso.
     pass
 
 

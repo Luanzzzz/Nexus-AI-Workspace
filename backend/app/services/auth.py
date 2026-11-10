@@ -1,9 +1,13 @@
-"""Caso de uso de cadastro.
+"""Caso de uso de cadastro e autenticação.
 
 O SQLAlchemy 2 abre a transação sozinho na primeira consulta (autobegin).
 Este serviço não chama session.begin(): depois do get_by_email a transação
 já está ativa, e um begin() nessa hora falharia. O fim da transação é
 commit() no sucesso ou rollback() na duplicidade e em qualquer falha.
+
+O hash Argon2id corre fora da transação: no cadastro, antes de qualquer
+SQL; no login, depois de ler e encerrar a transação de leitura. Assim a
+conexão volta ao pool durante o custo de CPU/memória.
 """
 
 import asyncio
@@ -58,23 +62,24 @@ class AuthService:
         # O schema também baixa a caixa. O caso de uso repete, porque o
         # repositório compara o email exatamente como recebe.
         email = data.email.lower()
+        # Hash antes do SQL: iguala o custo de email novo e existente e
+        # não segura conexão do pool durante o Argon2.
+        password_hash = await asyncio.to_thread(hash_password, data.password)
 
         try:
             existing = await self.users.get_by_email(email)
             if existing is not None:
-                # Sem escrita para confirmar; o except abaixo faz o rollback.
+                await self.session.rollback()
                 raise DuplicateEmailError
 
-            # Argon2id é síncrono e lento; a thread libera o event loop.
-            # A transação aberta pela consulta continua até o commit
-            # (trade-off aceito no MVP: conexão ocupada durante o hash).
-            password_hash = await asyncio.to_thread(hash_password, data.password)
             user = await self.users.create_user(
                 name=data.name,
                 email=email,
                 password_hash=password_hash,
             )
             await self.session.commit()
+        except DuplicateEmailError:
+            raise
         except IntegrityError as exc:
             await self.session.rollback()
             if _is_email_unique_violation(exc):
@@ -87,25 +92,27 @@ class AuthService:
         return user
 
     async def authenticate(self, credentials: LoginRequest) -> User:
-        """Valida email e senha; só lê, sem commit nem rollback.
+        """Valida email e senha; só lê, sem commit de escrita.
 
         Inexistente, senha errada e inativo levantam a mesma
         InvalidCredentialsError, depois de uma verificação Argon2 em todos.
         """
         email = credentials.email.lower()
         user = await self.users.get_by_email(email)
+        stored_hash = user.password_hash if user is not None else None
+        is_active = user.is_active if user is not None else False
+        if user is not None:
+            self.session.expunge(user)
+        # Encerra a transação de leitura antes do Argon2 (A3).
+        await self.session.commit()
 
-        # Sem usuário, confere contra o hash fictício para igualar o custo.
-        # Argon2id fora do event loop, como no cadastro; o hash fictício
-        # (se ainda não existe) também é gerado dentro da thread.
         matches = await asyncio.to_thread(
             _verify_blocking,
             credentials.password,
-            user.password_hash if user is not None else None,
+            stored_hash,
         )
 
-        # Inativo só é rejeitado depois da verificação, com custo similar.
-        if user is None or not user.is_active or not matches:
+        if user is None or not is_active or not matches:
             raise InvalidCredentialsError
         return user
 
