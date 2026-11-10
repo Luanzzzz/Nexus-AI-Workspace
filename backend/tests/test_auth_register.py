@@ -8,6 +8,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
@@ -182,3 +183,25 @@ def test_register_rejects_nul_in_name_with_422():
     assert error["loc"][-1] == "name"
     assert "input" not in error
     assert asyncio.run(_load_user(email)) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_http_registers_same_email_create_one_row():
+    email = _email()
+    transport = httpx.ASGITransport(app=app)
+    payload = {"name": "Ana Silva", "email": email, "password": _PASSWORD}
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            responses = await asyncio.gather(
+                *[client.post("/api/v1/auth/register", json=payload) for _ in range(8)]
+            )
+        assert {item.status_code for item in responses} == {201}
+        bodies = {item.text for item in responses}
+        assert bodies == {'{"detail":"Cadastro processado."}'}
+        user = await _load_user(email)
+        assert user is not None
+    finally:
+        await _delete_user(email)

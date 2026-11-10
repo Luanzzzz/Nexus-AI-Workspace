@@ -66,6 +66,7 @@ def test_settings_rejects_placeholder_jwt_secret(monkeypatch, placeholder):
         "CHANGE_ME_LOCAL_CHANGE_ME_LOCAL_",
         "your-secret-key-your-secret-key!",
         " " * 32,
+        "qwertyuiopasdfghjklzxcvbnm123456",
     ],
 )
 def test_settings_rejects_weak_or_placeholder_jwt_secret(monkeypatch, weak):
@@ -142,6 +143,30 @@ def test_settings_accepts_debug_in_development(monkeypatch):
     monkeypatch.setenv("DEBUG", "true")
 
     assert Settings(_env_file=None).debug is True
+
+
+def test_settings_accepts_zero_pool_overflow(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("DB_MAX_OVERFLOW", "0")
+
+    assert Settings(_env_file=None).db_max_overflow == 0
+
+
+def test_settings_rejects_skewed_low_entropy_secret(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "a" * 40 + "bcdefghij")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_fastapi_debug_only_in_development(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("DEBUG", "true")
+
+    loaded = Settings(_env_file=None)
+    assert loaded.debug is True
+    assert loaded.fastapi_debug is False
 
 
 def test_settings_rejects_unknown_environment(monkeypatch):

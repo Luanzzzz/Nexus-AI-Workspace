@@ -19,6 +19,10 @@ TEST_DATABASE_NAME = "nexus_ai_test"
 ALLOWED_TEST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+def is_safe_test_database(database: str | None, host: str | None) -> bool:
+    return database == TEST_DATABASE_NAME and host in ALLOWED_TEST_HOSTS
+
+
 def _protection_failure_message(
     configured_database: str | None, host: str | None
 ) -> str:
@@ -38,7 +42,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
     configured_database = database_url.database
     host = database_url.host
-    if configured_database == TEST_DATABASE_NAME and host in ALLOWED_TEST_HOSTS:
+    if is_safe_test_database(configured_database, host):
         return
 
     pytest.fail(

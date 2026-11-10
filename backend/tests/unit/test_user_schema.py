@@ -259,11 +259,9 @@ def test_user_register_rejects_control_characters_in_name(bad):
     assert any(error["loc"] == ("name",) for error in errors)
 
 
-def test_login_request_rejects_nul_in_password():
-    with pytest.raises(ValidationError) as exc_info:
-        LoginRequest.model_validate(
-            {"email": "ana@example.com", "password": "senha-ficticia\x00x"}
-        )
-
-    errors = exc_info.value.errors()
-    assert any(error["loc"] == ("password",) for error in errors)
+def test_login_request_accepts_nul_in_password():
+    # A senha vai ao Argon2; NUL não é gravado em coluna text. 422 fica no name.
+    login = LoginRequest.model_validate(
+        {"email": "ana@example.com", "password": "senha-ficticia\x00x"}
+    )
+    assert "\x00" in login.password

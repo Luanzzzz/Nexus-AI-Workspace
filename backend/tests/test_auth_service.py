@@ -233,6 +233,76 @@ async def test_register_translates_unique_race_to_duplicate_email():
         await _delete_user(email)
 
 
+@pytest.mark.asyncio
+async def test_register_rolls_back_on_integrity_error():
+    class _FakeSession:
+        rollbacks = 0
+
+        async def rollback(self) -> None:
+            self.rollbacks += 1
+
+    session = _FakeSession()
+    service = AuthService(session)  # type: ignore[arg-type]
+
+    async def miss(_email: str) -> User | None:
+        return None
+
+    async def boom(*, name: str, email: str, password_hash: str) -> User:
+        del name, email, password_hash
+        raise IntegrityError("INSERT INTO users", {}, Exception("restricao"))
+
+    service.users.get_by_email = miss  # type: ignore[method-assign]
+    service.users.create_user = boom  # type: ignore[method-assign]
+
+    with pytest.raises(IntegrityError):
+        await service.register(
+            UserRegister(name="Ana Silva", email=_email(), password=_PASSWORD)
+        )
+    assert session.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_register_hashes_before_database_lookup():
+    order: list[str] = []
+
+    class _FakeSession:
+        async def rollback(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            order.append("commit")
+
+    original_hash = auth_module.hash_password
+
+    def tracking_hash(password: str) -> str:
+        order.append("hash")
+        return original_hash(password)
+
+    auth_module.hash_password = tracking_hash
+    service = AuthService(_FakeSession())  # type: ignore[arg-type]
+
+    async def lookup(email: str) -> User | None:
+        del email
+        order.append("lookup")
+        return None
+
+    async def create(*, name: str, email: str, password_hash: str) -> User:
+        del name, password_hash
+        order.append("create")
+        return User(id=1, name="Ana", email=email, password_hash="x")
+
+    service.users.get_by_email = lookup  # type: ignore[method-assign]
+    service.users.create_user = create  # type: ignore[method-assign]
+    try:
+        await service.register(
+            UserRegister(name="Ana Silva", email=_email(), password=_PASSWORD)
+        )
+    finally:
+        auth_module.hash_password = original_hash
+
+    assert order[:2] == ["hash", "lookup"]
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_concurrent_registers_confirm_at_most_one_user():

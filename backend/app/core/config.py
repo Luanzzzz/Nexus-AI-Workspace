@@ -63,6 +63,33 @@ def _compact_secret(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.strip().lower())
 
 
+_KEYBOARD_ROWS = (
+    "qwertyuiop",
+    "asdfghjkl",
+    "zxcvbnm",
+    "1234567890",
+)
+_KEYBOARD_CONCAT = "".join(_KEYBOARD_ROWS)
+
+
+def _is_keyboard_sequence(secret: str) -> bool:
+    compact = _compact_secret(secret)
+    if len(compact) < JWT_SECRET_MIN_BYTES:
+        return False
+    if compact in _KEYBOARD_CONCAT or compact[::-1] in _KEYBOARD_CONCAT:
+        return True
+    window = 10
+    haystacks = tuple(row + row[::-1] + row for row in _KEYBOARD_ROWS) + (
+        _KEYBOARD_CONCAT,
+        _KEYBOARD_CONCAT[::-1],
+    )
+    for index in range(0, len(compact) - window + 1):
+        chunk = compact[index : index + window]
+        if any(chunk in haystack for haystack in haystacks):
+            return True
+    return False
+
+
 def _is_placeholder_secret(secret: str) -> bool:
     compact = _compact_secret(secret)
     if not compact:
@@ -131,6 +158,8 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY tem entropia insuficiente")
         if _shannon_entropy(secret) < JWT_SECRET_MIN_ENTROPY_BITS:
             raise ValueError("JWT_SECRET_KEY tem entropia insuficiente")
+        if _is_keyboard_sequence(secret):
+            raise ValueError("JWT_SECRET_KEY tem entropia insuficiente")
         return value
 
     @field_validator("jwt_access_token_expire_minutes")
@@ -142,7 +171,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "db_pool_size",
-        "db_max_overflow",
         "db_pool_timeout",
         "auth_login_per_email_limit",
         "auth_login_per_ip_limit",
@@ -153,6 +181,13 @@ class Settings(BaseSettings):
     def _validate_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("valor deve ser positivo")
+        return value
+
+    @field_validator("db_max_overflow")
+    @classmethod
+    def _validate_overflow(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("DB_MAX_OVERFLOW não pode ser negativo")
         return value
 
     @model_validator(mode="after")
