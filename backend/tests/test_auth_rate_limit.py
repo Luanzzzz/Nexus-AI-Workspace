@@ -10,8 +10,13 @@ from sqlalchemy import delete
 from starlette.requests import Request
 
 from app.core.config import settings
+from app.core.emailcanon import email_rate_limit_key
 from app.core.rate_limit import limiter
-from app.core.request_context import client_ip
+from app.core.request_context import (
+    client_ip,
+    client_ip_from_peer_and_forwarded,
+    uvicorn_proxy_kwargs,
+)
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.user import User
@@ -94,6 +99,44 @@ def test_forged_xff_from_untrusted_peer_is_ignored(monkeypatch):
     }
     request = Request(scope)
     assert client_ip(request) == "203.0.113.10"
+
+
+def test_xff_appended_by_trusted_proxy_uses_rightmost_untrusted(monkeypatch):
+    monkeypatch.setattr(settings, "trusted_proxies", "10.0.0.1")
+    assert (
+        client_ip_from_peer_and_forwarded(
+            "10.0.0.1",
+            "203.0.113.9, 198.51.100.20",
+            frozenset({"10.0.0.1"}),
+        )
+        == "198.51.100.20"
+    )
+
+
+def test_uvicorn_proxy_kwargs_disable_headers_when_untrusted(monkeypatch):
+    monkeypatch.setattr(settings, "trusted_proxies", "")
+    assert uvicorn_proxy_kwargs() == {
+        "proxy_headers": False,
+        "forwarded_allow_ips": "",
+    }
+    monkeypatch.setattr(settings, "trusted_proxies", "10.0.0.1")
+    assert uvicorn_proxy_kwargs() == {
+        "proxy_headers": True,
+        "forwarded_allow_ips": "10.0.0.1",
+    }
+
+
+def test_login_email_rate_limit_uses_canonical_email(enable_limits):
+    mixed = "  Limit.User+tag@Example.COM  "
+    canonical = email_rate_limit_key(mixed)
+    assert canonical is not None
+    first = _CLIENT.post("/api/v1/auth/login", json=_login_payload(mixed))
+    second = _CLIENT.post("/api/v1/auth/login", json=_login_payload(canonical.upper()))
+    blocked = _CLIENT.post("/api/v1/auth/login", json=_login_payload(canonical))
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert blocked.status_code == 429
 
 
 def test_xff_used_only_from_trusted_proxy(monkeypatch):

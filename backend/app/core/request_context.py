@@ -11,20 +11,46 @@ def trusted_proxy_hosts() -> frozenset[str]:
     )
 
 
-def client_ip(request: Request) -> str:
-    """IP do peer, salvo se ele estiver em TRUSTED_PROXIES.
+def forwarded_hops(forwarded: str | None) -> list[str]:
+    if not forwarded:
+        return []
+    return [hop.strip() for hop in forwarded.split(",") if hop.strip()]
 
-    Só então o primeiro hop de X-Forwarded-For é usado. O padrão da lista
-    é vazio: um X-Forwarded-For forjado a partir da internet é ignorado.
-    O proxy precisa sobrescrever o cabeçalho, não anexar o valor do cliente.
+
+def client_ip_from_peer_and_forwarded(
+    peer: str, forwarded: str | None, trusted: frozenset[str]
+) -> str:
+    """IP do cliente: XFF só conta se o peer for proxy confiável.
+
+    Percorre a cadeia da direita para a esquerda e devolve o primeiro hop
+    que não está em `trusted`. Hop da esquerda é controlado pelo cliente.
     """
-    peer = request.client.host if request.client is not None else ""
     if not peer:
         return "unknown"
-    if peer not in trusted_proxy_hosts():
+    if peer not in trusted:
         return peer
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded is None:
-        return peer
-    first = forwarded.split(",", 1)[0].strip()
-    return first or peer
+    for hop in reversed(forwarded_hops(forwarded)):
+        if hop not in trusted:
+            return hop
+    return peer
+
+
+def client_ip(request: Request) -> str:
+    peer = request.client.host if request.client is not None else ""
+    return client_ip_from_peer_and_forwarded(
+        peer,
+        request.headers.get("x-forwarded-for"),
+        trusted_proxy_hosts(),
+    )
+
+
+def uvicorn_proxy_kwargs() -> dict[str, bool | str]:
+    """Alinha o ProxyHeadersMiddleware do uvicorn a TRUSTED_PROXIES.
+
+    Lista vazia: não honrar XFF nem de loopback (o default do uvicorn
+    confiaria em 127.0.0.1 e reescreveria request.client).
+    """
+    trusted = settings.trusted_proxies.strip()
+    if not trusted:
+        return {"proxy_headers": False, "forwarded_allow_ips": ""}
+    return {"proxy_headers": True, "forwarded_allow_ips": trusted}
