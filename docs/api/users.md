@@ -14,7 +14,7 @@ O schema valida a entrada. Ele não calcula hash, não grava no banco e não aut
 | --- | --- |
 | `name` | Texto de exibição. Espaços nas extremidades são removidos. Depois disso, mínimo 1 e máximo 150 caracteres. Uma palavra, acentos e hífens são aceitos. Caracteres de controle (NUL e categoria Unicode Cc) são rejeitados com 422. |
 | `email` | `EmailStr`, com `email-validator` declarado em `backend/pyproject.toml`. O endereço inteiro é guardado em minúsculas. Ver [ADR 0003](../decisions/0003-canonicalizacao-de-email-no-cadastro.md). |
-| `password` | Mínimo 15 e máximo 128 caracteres. Sem exigência de símbolo, número ou maiúscula. Sem `strip`, sem conversão para minúsculas e sem remoção silenciosa de caracteres. Espaços e Unicode permanecem como foram enviados, dentro do limite de comprimento. |
+| `password` | Mínimo 15 e máximo 128 caracteres. Sem exigência de símbolo, número ou maiúscula. Sem `strip`, sem conversão para minúsculas e sem remoção silenciosa de caracteres. Espaços, Unicode e caracteres de controle (inclusive NUL) permanecem como foram enviados; vão para o Argon2id, não para coluna `text`. |
 
 Erros de validação relevantes: `missing`, `string_too_short`, `string_too_long`, `value_error` no email inválido e `extra_forbidden`.
 
@@ -76,7 +76,7 @@ O token segue o [ADR 0006](../decisions/0006-jwt-access-token.md): HS256, expira
 | --- | --- | --- |
 | 200 | Credenciais válidas e conta ativa | `TokenResponse` e `Cache-Control: no-store` |
 | 401 | Email inexistente, senha errada ou conta inativa | `{"detail": "Credenciais inválidas."}`, `WWW-Authenticate: Bearer` e `Cache-Control: no-store` |
-| 422 | Corpo inválido, campo ausente, email inválido, caractere de controle ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` nem a senha |
+| 422 | Corpo inválido, campo ausente, email inválido, caractere de controle em `name`/`email` ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` nem a senha |
 | 429 | Limite de tentativas por IP ou por email | `{"detail": "Muitas tentativas. Tente novamente mais tarde."}` e `Retry-After` |
 | 500 | Falha interna (hash armazenado corrompido, erro de banco, erro inesperado) | `{"detail": "Erro interno do servidor."}` e `X-Request-ID` |
 

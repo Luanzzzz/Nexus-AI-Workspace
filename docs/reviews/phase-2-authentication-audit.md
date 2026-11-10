@@ -51,7 +51,7 @@ python -m alembic check
 python -m pytest
 ```
 
-A suíte original na SHA auditada: 222 passed. Esta correção fica em **245 passed** (ruff, `alembic check`, pytest em ordem padrão e com `--randomly-seed=1` e `42`; testes novos também passam isolados). Os testes de integração só rodam se o banco for `nexus_ai_test` **e** o host for `127.0.0.1`/`localhost`/`::1`.
+A suíte original na SHA auditada: 222 passed. Depois da primeira correção: 245. Esta revisão do Verificador acrescenta regressões de G1–G4 e G6–G10. Os testes de integração só rodam se o banco for `nexus_ai_test` **e** o host for `127.0.0.1`/`localhost`/`::1`.
 
 ## 7. Achados
 
@@ -73,6 +73,12 @@ IDs consolidados (sem duplicar A6+QA1+I1, A4, etc.). Cada item: problema, onde, 
 | A7 | P2 | Sem CI | `.github/workflows/` | pasta só com README | Merge sem gate | workflow ruff + alembic + pytest + Postgres | `.github/workflows/backend.yml` |
 | A8 / A9 | P3 | README e ADRs 0003–0006 desatualizados | `README.md`, `docs/decisions/` | leitura | Operador desinformado | README, ADRs, contrato HTTP, ADR 0007 | revisão |
 | I9 | P3 | OpenAPI em production | `main.py` | `ENVIRONMENT=production` `/docs` 200 | Mapa de rotas | docs/redoc/openapi `None` em production | `test_production_hides_openapi` |
+| I8 | P3 | Login/me sem `Cache-Control: no-store` | `api/v1/auth.py` | 200/401 sem o header | Token em cache de proxy | `no-store` em login, me, 401 e 429 | `test_login_returns_decodable_bearer_token` |
+| QA7 | P3 | IDs de teste JWT mudavam a cada segundo | `tests/unit/test_jwt.py` | `--collect-only` duas vezes | `no tests ran` no re-run | ids fixos, timestamp dentro do teste | duas coletas com nodeids iguais |
+| QA9 | P3 | Placeholder JWT inalcançável (lista curta demais) | `core/config.py` | `changeme`×4 de 32+ bytes aceito | Segredo fraco sobe | repetição compacta + entropia + teclado | `test_settings_rejects_weak_or_placeholder_jwt_secret` |
+| A10 | P3 | `register` instanciava o service na rota | `api/v1/auth.py` | override desigual | Testes assimétricos | `Depends(get_auth_service)` | suíte HTTP de register |
+| G1 | P2 exp | Uvicorn default honra XFF no loopback; app lia o hop da esquerda | `uvicorn` + `request_context.py` | peer 127.0.0.1 + XFF variando → 201×N | Bypass do rate limit por IP | `python -m app` alinha `proxy_headers`; cadeia da direita | `test_uvicorn_empty_trusted_proxies_ignores_forged_xff` |
+| M6 | P3 | Rollback do `IntegrityError` sem teste | `services/auth.py` | mutante tira o rollback e a suíte passa | Sessão suja se o close falhar | teste de fake session conta rollback | `test_register_rolls_back_on_integrity_error` |
 
 **Concordâncias e discordâncias com os relatórios**
 
@@ -81,7 +87,7 @@ IDs consolidados (sem duplicar A6+QA1+I1, A4, etc.). Cada item: problema, onde, 
 - **A2:** parcialmente confirmado (teto implícito do executor). **Não** introduzi semáforo: o dono pediu correção pequena só se coubesse no item 7 (liberar sessão / reordenar). A3 foi mitigado; A2 permanece residual.
 - **I8 nos relatórios** é `Cache-Control: no-store` (P3). O pedido do dono citou I8 como OpenAPI; OpenAPI no Interrogador é **I9**. Apliquei os dois: `no-store` nas respostas de auth e docs desligadas em production. Justificativa OpenAPI: em production o schema mapeia autenticação e, no futuro, Documents; no estudo local (`development`/`test`) as docs continuam ligadas.
 - **I3:** sem lockfile (residual). Pisos de `PyJWT>=2.15.1`, `fastapi`, `starlette`, `uvicorn` e `argon2-cffi` foram subidos (trivial).
-- P3 QA6, QA7 (IDs JWT), QA8, QA10, QA4, A10, A11, A13–A16, I4, I10, I11: ver seção 9. QA7 (IDs estáveis) foi corrigido por ser trivial.
+- P3 QA6, QA8, QA10, QA4, A11, A13–A16, I4, I10, I11: ver seção 9. QA7, QA9, A10, I8, G1 e M6 foram corrigidos.
 
 ## 8. Correções
 
@@ -94,7 +100,7 @@ O que mudou (código) e como foi testado:
 5. Argon2id com constantes iguais à política anterior + teste de parâmetros.
 6. Pool explícito + `pool_pre_ping`.
 7. Hash antes do SQL no cadastro; `commit` de leitura antes do verify no login; testes de ordem e `/me` concorrente com verify lento.
-8. Rate limit em memória + 429; XFF só com proxy confiável.
+8. Rate limit em memória + 429; XFF só com proxy confiável; `python -m app` alinha o uvicorn; hops da direita; poda de chaves; email canônico.
 9. Register genérico 201; testes HTTP e UNIQUE sob corrida mantidos no service.
 10. CI GitHub Actions.
 11. README, ADRs 0003–0007, `docs/api/users.md`.
@@ -102,24 +108,27 @@ O que mudou (código) e como foi testado:
 
 ## 9. Riscos residuais
 
-| ID | Risco | Por que ficou | Condição de resolução |
-| --- | --- | --- | --- |
-| A2 | Sem teto configurável de Argon2id | Correção não é pequena; p=4 permanece por ordem do dono | Benchmark na VPS; `Semaphore` ou executor dedicado; teto ≈ `cpus // p` |
-| A5 / I10 | Sem logout, `jti` ou `token_version` | Fora do escopo | Migration + ADR junto com reset de senha |
-| A16 | Sem `POST /auth/refresh` | Coerente com §10; §11 cita a rota | Alinhar o documento técnico ou implementar com A5 |
-| I3 | Sem lockfile / pin com hash | Só pisos mínimos | `uv lock` ou `pip-compile --generate-hashes` + `pip-audit` no CI |
-| I4 | Sem limite de corpo | Fora do escopo | Proxy `client_max_body_size` e/ou middleware 413 |
-| I11 | Sem MFA, lockout, HSTS, nosniff, senhas vazadas | MVP de estudo | HSTS no proxy; MFA/lockout em fase posterior |
-| QA4 / A13 | Verify aceita tipo/custo do hash; sem rehash | Fora do escopo | `extract_parameters` + teto; `check_needs_rehash` no login |
-| A14 | Primeiro dummy hash lazy (~+60 ms / processo) | Residual P3 | Gerar no lifespan |
-| QA6 | `alembic check` cego a CHECK | Residual | Teste `pg_constraint` ou plugin Alembic |
-| QA8 | Coverage sem greenlet | Residual | `pytest-cov` + `concurrency = thread,greenlet` |
-| QA10 | Sem NFKC / confusáveis | Residual | ADR + rejeitar local-part não ASCII ou NFKC |
-| A11 | Envelope de erro ≠ §26 | Residual | ADR se o §26 vale no MVP |
-| A10 | Instanciação register vs login | Register agora usa `get_auth_service` (trivial) | — |
-| A15 | Dockerfile placeholder | Fora da Fase 2 | Quando houver imagem real |
-| Limitador | Estado por processo | Documentado no ADR 0007 | Store compartilhado ou limite no proxy |
-| Locale PG | `lower()` só conferido em C.UTF-8 nos relatórios | Não reexecutado em `en_US.utf8`/ICU | Repetir no locale de produção |
+Cada residual: problema, onde, reproduzir, impacto, por que ficou, condição de resolução e como testar depois.
+
+| ID | Problema | Onde | Reproduzir | Impacto | Por que ficou | Condição | Como testar |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A2 | Sem teto configurável de Argon2id | `asyncio.to_thread` | N logins concorrentes; RSS sobe com `min(32, cpu+4)` | Pico de memória ~64 MiB × workers | Não é correção pequena; p=4 fixo | Benchmark na VPS; `Semaphore` ≈ `cpus // p` | Instrumentar hasher; N nunca passa do teto |
+| A5 / I10 | Sem logout / `token_version` | `tokens.py` | Token de conta ativa vale até `exp`; reset de senha (inexistente) não derruba | Token roubado por 30 min | Fora do escopo | Migration + ADR com reset | Incrementar versão → 401 no token antigo |
+| A16 | Sem `POST /auth/refresh` | OpenAPI | A rota não existe | Relogin a cada 30 min | Coerente com §10 | Alinhar §11 ou implementar com A5 | OpenAPI sem a rota, ou 200 com refresh |
+| I3 | Sem lockfile | `pyproject.toml` | Build novo resolve outras versões | Advisories em pisos antigos | Só pisos mínimos nesta etapa | `uv lock` + `pip-audit` no CI | Job falha com CVE |
+| I4 | Sem limite de corpo | `main.py` | POST 50 MiB | DoS de memória | Fora do escopo | Proxy e/ou middleware 413 | 1 MiB → 413 |
+| I11 | Sem MFA, lockout, HSTS | headers HTTP | Login só `www-authenticate` | Superfície OWASP incompleta | MVP de estudo | HSTS no proxy; MFA depois | Headers e fluxo MFA |
+| QA4 / A13 | Verify segue o hash gravado; sem rehash | `security.py` | argon2i ou m=256 MiB no banco | DoS / downgrade se o banco for escrito | Fora do escopo | Teto de parâmetros + rehash | Hash fora da política → 500; login regrava |
+| A14 | Dummy hash lazy | `services/auth.py` | 1º login inexistente ~+60 ms / processo | Oráculo pontual | P3 | Gerar no lifespan | Dois logins inexistentes no processo novo com tempos iguais |
+| QA6 | `alembic check` cego a CHECK | `alembic/env.py` | `DROP CONSTRAINT ck_users_email_lowercase`; check ok | Drift de CHECK | Mitigado pelo teste de model | Plugin ou `pg_constraint` | Teste falha se o CHECK sumir |
+| QA8 | Coverage sem greenlet | `pyproject.toml` | pytest-cov padrão 97% | Falso negativo | Residual | `concurrency=thread,greenlet` | Gate ~95% |
+| QA10 | Sem NFKC / confusáveis | `schemas/user.py` | `ｆｕｌｌ@` ≠ `full@` | Homógrafo na Fase 3 | ADR 0003 | Política ASCII ou NFKC | Parametrizado |
+| A11 | Envelope ≠ §26 | handlers | 500 é `{"detail":...}` | Divergência documental | ADR pendente | Decidir se §26 vale no MVP | Contrato único com `request_id` |
+| A15 | Dockerfile placeholder | `backend/Dockerfile` | `docker build` incompleto | Sem imagem | Fora da Fase 2 | Dockerfile real | CI de build |
+| G5 | Δ ~1,4 ms novo vs existente no register | INSERT vs rollback | N=40, mediana | Oráculo de tempo residual | Aceitável no MVP | Só se a Fase 3 exigir uniformidade de ns | Teste de timing com folga |
+| Limitador | Estado por processo | `rate_limit.py` | 2 workers × teto | Teto efetivo dobra | Sem Redis | Store compartilhado ou proxy | Dois processos, N+1 ainda 200 |
+| Locale PG | `lower()` só em C.UTF-8 | CHECK email | Python 3.13 / `en_US.utf8` | 500 de CHECK | Não reexecutado | Repetir no locale de produção | Script de code points |
+| Entrada uvicorn | `uvicorn app.main:app` sem flags | CLI | Default honra XFF no loopback | G1 volta | Documentado; `python -m app` é a entrada | Proibir o CLI cru no deploy | Teste G1 contra o comando de produção |
 
 ## 10. Conclusão
 

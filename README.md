@@ -48,11 +48,11 @@ A configuração vem de variáveis de ambiente ou do `.env` da raiz (modelo em `
 - `ENVIRONMENT`: `development` (padrão), `test` ou `production`.
 - `DEBUG`: padrão `false`. Só liga o debug do FastAPI em `development`. `ENVIRONMENT=production` com `DEBUG=true` impede a inicialização. Em production `/docs`, `/redoc` e `/openapi.json` ficam desligados.
 - `JWT_SECRET_KEY`: obrigatório, ≥32 bytes, sem placeholder e com entropia mínima. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-- `TRUSTED_PROXIES`: lista vazia por padrão. Só IPs dessa lista podem fazer o app honrar `X-Forwarded-For` (rate limit). Suba o uvicorn com `--forwarded-allow-ips` igual a essa lista; o proxy deve **sobrescrever** o cabeçalho.
+- `TRUSTED_PROXIES`: lista vazia por padrão. Só IPs dessa lista podem fazer o app honrar `X-Forwarded-For` (rate limit), lendo a cadeia **da direita**. Suba com `python -m app` a partir de `backend/` (alinha `proxy_headers` / `forwarded_allow_ips` à lista). `uvicorn app.main:app` sem esses flags volta a confiar no loopback. O proxy deve anexar o IP do cliente, não o valor forjado.
 - `AUTH_RATE_LIMIT_ENABLED`: padrão `true`. Os testes desligam.
 - Pool: `DB_POOL_SIZE` (5), `DB_MAX_OVERFLOW` (10), `DB_POOL_TIMEOUT` (30), `DB_POOL_PRE_PING` (`true`).
 
-Erros 500 devolvem JSON genérico e o cabeçalho `X-Request-ID`. O log traz o mesmo id e o tipo da exceção, sem email, senha, hash, JWT ou parâmetros SQL.
+Erros 500 devolvem JSON genérico e o cabeçalho `X-Request-ID` (valor recebido só é ecoado se for hex/token curto). O log interno traz o mesmo id, o tipo da exceção e o traceback já redigido, sem email, senha, hash, JWT, DSN ou parâmetros SQL.
 
 ## Estrutura do monorepo
 

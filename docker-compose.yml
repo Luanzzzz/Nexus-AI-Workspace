@@ -13,6 +13,9 @@
 
 services:
   postgres:
+    # PostgreSQL 17, a mesma major do CI (.github/workflows/backend.yml).
+    # A imagem inclui pgvector para as fases seguintes; o CI usa postgres:17
+    # sem a extensão, suficiente para a suíte de Authentication.
     image: pgvector/pgvector:0.8.7-pg17
     ports:
       - "127.0.0.1:5433:5432"

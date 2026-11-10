@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:17
         env:
           POSTGRES_USER: nexus_user
           POSTGRES_PASSWORD: CHANGE_ME_LOCAL
