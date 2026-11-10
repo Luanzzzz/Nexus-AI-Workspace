@@ -19,4 +19,8 @@ O repositório faz `add`, consulta e `flush`. Não dá commit nem rollback. `get
 
 A consulta inicial também fica dentro do `try`: se `get_by_email` falhar, o serviço faz `rollback()` antes de propagar o erro.
 
-A ordem do cadastro é consulta, hash e gravação. O hash Argon2id roda em `asyncio.to_thread` para sair do event loop, mas a transação aberta pela consulta segue aberta durante o hash. Não abrimos outra transação no meio. Cada cadastro concorrente usa a própria `AsyncSession`.
+A ordem do cadastro é hash, consulta e gravação. O hash Argon2id roda em `asyncio.to_thread` **antes** de qualquer SQL, para não ocupar conexão do pool (A3) e para igualar o custo de email novo e existente (A4). A transação abre no `get_by_email`. Não chamamos `session.begin()`. Cada cadastro concorrente usa a própria `AsyncSession`.
+
+No login, a transação de leitura termina com `commit()` (e `expunge` do usuário) antes da verificação Argon2, pelo mesmo motivo.
+
+Adendo da auditoria 2.7 (2026-11-10). Ver [ADR 0007](0007-rate-limit-proxy-e-cadastro-generico.md).

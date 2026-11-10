@@ -8,6 +8,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
@@ -48,17 +49,7 @@ def test_register_returns_public_user_and_stores_argon2id_hash():
 
         assert response.status_code == 201
         body = response.json()
-        assert set(body) == {
-            "id",
-            "name",
-            "email",
-            "is_active",
-            "created_at",
-            "updated_at",
-        }
-        assert body["name"] == "Ana Silva"
-        assert body["email"] == email
-        assert body["is_active"] is True
+        assert body == {"detail": "Cadastro processado."}
         assert _PASSWORD not in response.text
         assert "password_hash" not in response.text
         assert "$argon2" not in response.text
@@ -73,7 +64,7 @@ def test_register_returns_public_user_and_stores_argon2id_hash():
 
 
 @pytest.mark.integration
-def test_register_existing_email_returns_409_without_secrets():
+def test_register_existing_email_matches_new_email_response():
     email = _email()
     second_password = "outra-senha-ficticia"
     try:
@@ -82,22 +73,29 @@ def test_register_existing_email_returns_409_without_secrets():
             json={"name": "Ana Silva", "email": email, "password": _PASSWORD},
         )
         assert first.status_code == 201
+        assert first.json() == {"detail": "Cadastro processado."}
 
         response = _CLIENT.post(
             "/api/v1/auth/register",
             json={
-                "name": "Ana Silva",
+                "name": "Outra Pessoa",
                 "email": email,
                 "password": second_password,
             },
         )
 
-        assert response.status_code == 409
-        assert response.json() == {"detail": "Email já cadastrado."}
+        assert response.status_code == first.status_code
+        assert response.json() == first.json()
+        assert response.text == first.text
         assert second_password not in response.text
         assert _PASSWORD not in response.text
         assert "$argon2" not in response.text
         assert "password_hash" not in response.text
+
+        user = asyncio.run(_load_user(email))
+        assert user is not None
+        assert user.name == "Ana Silva"
+        assert verify_password(_PASSWORD, user.password_hash)
     finally:
         asyncio.run(_delete_user(email))
 
@@ -112,7 +110,10 @@ def test_register_treats_email_case_as_the_same_identity():
             json={"name": "Ana Silva", "email": mixed, "password": _PASSWORD},
         )
         assert first.status_code == 201
-        assert first.json()["email"] == canonical
+        assert first.json() == {"detail": "Cadastro processado."}
+        created = asyncio.run(_load_user(canonical))
+        assert created is not None
+        assert created.email == canonical
 
         response = _CLIENT.post(
             "/api/v1/auth/register",
@@ -122,7 +123,8 @@ def test_register_treats_email_case_as_the_same_identity():
                 "password": _PASSWORD,
             },
         )
-        assert response.status_code == 409
+        assert response.status_code == 201
+        assert response.json() == first.json()
         assert _PASSWORD not in response.text
     finally:
         asyncio.run(_delete_user(canonical))
@@ -166,3 +168,40 @@ def test_register_rejects_short_password_without_leaking_it(caplog):
     assert leaked_hash not in extra.text
     assert secret not in caplog.text
     assert leaked_hash not in caplog.text
+
+
+@pytest.mark.integration
+def test_register_rejects_nul_in_name_with_422():
+    email = _email()
+    response = _CLIENT.post(
+        "/api/v1/auth/register",
+        json={"name": "Ana\u0000Silva", "email": email, "password": _PASSWORD},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert error["loc"][-1] == "name"
+    assert "input" not in error
+    assert asyncio.run(_load_user(email)) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_http_registers_same_email_create_one_row():
+    email = _email()
+    transport = httpx.ASGITransport(app=app)
+    payload = {"name": "Ana Silva", "email": email, "password": _PASSWORD}
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            responses = await asyncio.gather(
+                *[client.post("/api/v1/auth/register", json=payload) for _ in range(8)]
+            )
+        assert {item.status_code for item in responses} == {201}
+        bodies = {item.text for item in responses}
+        assert bodies == {'{"detail":"Cadastro processado."}'}
+        user = await _load_user(email)
+        assert user is not None
+    finally:
+        await _delete_user(email)

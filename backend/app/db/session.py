@@ -17,7 +17,14 @@ database_url = URL.create(
     database=settings.postgres_db,
 )
 
-engine = create_async_engine(database_url)
+engine = create_async_engine(
+    database_url,
+    hide_parameters=True,
+    pool_pre_ping=settings.db_pool_pre_ping,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+)
 
 SessionLocal = async_sessionmaker(
     bind=engine,

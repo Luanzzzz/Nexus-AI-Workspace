@@ -6,3 +6,4 @@ Documentação do Nexus AI Workspace.
 - `api/` — contratos HTTP
 - `decisions/` — ADRs
 - `diagrams/` — diagramas
+- `reviews/` — auditorias (Fase 2 Authentication)

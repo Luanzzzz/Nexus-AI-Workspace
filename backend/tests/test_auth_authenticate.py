@@ -203,15 +203,19 @@ async def test_corrupted_hash_is_internal_failure_without_leak(
 
 
 @pytest.mark.asyncio
-async def test_authenticate_does_not_commit():
+async def test_authenticate_commits_read_before_verify():
     class _FakeSession:
         commits = 0
 
         async def commit(self) -> None:
             self.commits += 1
 
+        def expunge(self, obj: object) -> None:
+            del obj
+
     fake = _FakeSession()
     service = AuthService(fake)  # type: ignore[arg-type]
+    order: list[str] = []
 
     async def lookup(email: str) -> User | None:
         del email
@@ -219,6 +223,17 @@ async def test_authenticate_does_not_commit():
 
     service.users.get_by_email = lookup  # type: ignore[method-assign]
 
-    with pytest.raises(InvalidCredentialsError):
-        await service.authenticate(LoginRequest(email=_email(), password=_PASSWORD))
-    assert fake.commits == 0
+    original_verify = auth_module._verify_blocking
+
+    def tracking_verify(password: str, password_hash: str | None) -> bool:
+        order.append(f"verify-after-commits={fake.commits}")
+        return original_verify(password, password_hash)
+
+    auth_module._verify_blocking = tracking_verify
+    try:
+        with pytest.raises(InvalidCredentialsError):
+            await service.authenticate(LoginRequest(email=_email(), password=_PASSWORD))
+    finally:
+        auth_module._verify_blocking = original_verify
+    assert fake.commits == 1
+    assert order == ["verify-after-commits=1"]

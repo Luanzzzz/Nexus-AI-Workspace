@@ -88,6 +88,7 @@ def test_login_returns_decodable_bearer_token(active_user, caplog):
     body = response.json()
     assert set(body) == {"access_token", "token_type"}
     assert body["token_type"] == "bearer"
+    assert response.headers.get("cache-control") == "no-store"
     token = body["access_token"]
     assert decode_access_token(token).user_id == user_id
 
@@ -129,10 +130,22 @@ def test_login_failures_share_identical_401(active_user, caplog):
         assert response.status_code == 401
         assert response.json() == {"detail": "Credenciais inválidas."}
         assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers.get("cache-control") == "no-store"
         assert response.text == responses[0].text
         assert "access_token" not in response.text
         _assert_no_leaks(response.text)
     _assert_no_leaks(caplog.text)
+
+
+@pytest.mark.integration
+def test_login_nul_password_returns_401():
+    response = _CLIENT.post(
+        _URL,
+        json={"email": "a@example.com", "password": "senha\x00ficticia-ok"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Credenciais inválidas."}
 
 
 @pytest.mark.parametrize(
@@ -173,6 +186,7 @@ def test_login_malformed_json_returns_422_without_password(caplog):
     assert _WRONG_PASSWORD not in caplog.text
 
 
+@pytest.mark.integration
 def test_login_verification_failure_returns_controlled_500(monkeypatch, caplog):
     async def fail(self: AuthService, credentials: LoginRequest):
         raise CredentialVerificationError
@@ -191,6 +205,7 @@ def test_login_verification_failure_returns_controlled_500(monkeypatch, caplog):
     _assert_no_leaks(caplog.text, email)
 
 
+@pytest.mark.integration
 def test_login_database_error_returns_controlled_500(monkeypatch, caplog):
     leaked = "postgresql://usuario:segredo-do-banco@127.0.0.1:5433/db"
 

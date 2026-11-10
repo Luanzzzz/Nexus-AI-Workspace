@@ -22,3 +22,5 @@ A senha não segue essa normalização. O comprimento de 15 a 128 caracteres tam
 ## Desdobramento
 
 A Etapa 2.4 manteve `String` e `UNIQUE(email)` e acrescentou `CHECK (email = lower(email))`. O registro dessa restrição está no [ADR 0004](0004-restricao-de-email-canonico.md). A fronteira da transação de cadastro está no [ADR 0005](0005-transacao-do-cadastro.md).
+
+`name` e `email` rejeitam caracteres de controle Unicode (categoria Cc, inclusive NUL). Isso evita 500 do PostgreSQL no `name`. A **senha** não passa por esse filtro: a OWASP pede aceitar qualquer caractere, o Argon2id aceita NUL, e o valor não é gravado em coluna `text`. No login, senha com NUL continua 401 (credencial inválida), não 422. Não há NFKC nem política de confusáveis no MVP; `ｆｕｌｌ@example.com` e `full@example.com` continuam identidades distintas.
