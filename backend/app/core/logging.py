@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import traceback
 from contextvars import ContextVar
 
 request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
@@ -35,6 +36,37 @@ def redact_text(text: str) -> str:
     for pattern in _PATTERNS:
         redacted = pattern.sub(_REDACTED, redacted)
     return redacted
+
+
+def _frames_without_source(exc: BaseException) -> str:
+    lines = [f"type={type(exc).__name__}"]
+    for frame in traceback.extract_tb(exc.__traceback__):
+        lines.append(f"  {frame.filename}:{frame.lineno} in {frame.name}")
+    return "\n".join(lines)
+
+
+def exception_log_text(exc: BaseException, *, environment: str) -> str:
+    """Texto do 500 interno.
+
+    Fora de development: só tipos e frames (arquivo, linha, função), sem
+    mensagem, sem locals e sem texto de __cause__/__context__. Em
+    development o traceback completo ainda passa por redact_text.
+    """
+    if environment == "development":
+        return redact_text("".join(traceback.format_exception(exc)))
+    chunks: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chunks.append(_frames_without_source(current))
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__context__ is not None and not current.__suppress_context__:
+            current = current.__context__
+        else:
+            break
+    return redact_text("\n".join(chunks))
 
 
 class RedactingFilter(logging.Filter):

@@ -52,7 +52,7 @@ A configuração vem de variáveis de ambiente ou do `.env` da raiz (modelo em `
 - `AUTH_RATE_LIMIT_ENABLED`: padrão `true`. Os testes desligam.
 - Pool: `DB_POOL_SIZE` (5), `DB_MAX_OVERFLOW` (10), `DB_POOL_TIMEOUT` (30), `DB_POOL_PRE_PING` (`true`).
 
-Erros 500 devolvem JSON genérico e o cabeçalho `X-Request-ID` (valor recebido só é ecoado se for hex/token curto). O log interno traz o mesmo id, o tipo da exceção e o traceback já redigido, sem email, senha, hash, JWT, DSN ou parâmetros SQL.
+Erros 500 devolvem JSON genérico e o cabeçalho `X-Request-ID` (valor recebido só é ecoado se for hex/token curto). Fora de `development`, o log interno traz o mesmo id, o tipo da exceção e os frames (arquivo, linha, função), sem a mensagem, sem locals e sem o texto de `__cause__`/`__context__`. O traceback completo só em `development`, ainda passando por `redact_text()`.
 
 ## Estrutura do monorepo
 

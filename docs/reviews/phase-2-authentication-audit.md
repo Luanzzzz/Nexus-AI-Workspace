@@ -48,10 +48,39 @@ python -m ruff check .
 python -m ruff format --check .
 python -m alembic upgrade head
 python -m alembic check
-python -m pytest
+POSTGRES_DB=nexus_ai_test python -m pytest
+POSTGRES_PORT=1 python -m pytest -m "not integration"
 ```
 
-A suíte original na SHA auditada: 222 passed. Depois da primeira correção: 245. Na SHA `91d13e8` (revisão G1–G10): 261 passed. Nesta correção do Reviewer (chave EmailStr + name-addr, `TRUSTED_PROXIES=*`, NUL no login, `/me` com pool=1): **269 passed** (ordem de arquivo e `--randomly-seed`). Os testes de integração só rodam se o banco for `nexus_ai_test` **e** o host for `127.0.0.1`/`localhost`/`::1`.
+A suíte original na SHA auditada: 222 passed. Depois da primeira correção: 245. Na SHA `91d13e8`: 261. Na SHA `db540bb` (Reviewer EmailStr): 269. Nesta rodada do mentor (P1 marcador+guard, P2 teto fail-closed, P2 log sem mensagem): **272 passed** (ordem de arquivo e `--randomly-seed=20261110`). Unitários sem Postgres: **201 passed**, 71 deselected. Integração só em `nexus_ai_test` em host local.
+
+`python -m pytest --collect-only -q -m "not integration" backend/tests/test_auth_rate_limit.py`
+
+Antes (db540bb, 9 collected):
+
+```
+tests/test_auth_rate_limit.py::test_login_name_addr_display_names_share_email_limit
+tests/test_auth_rate_limit.py::test_login_rate_limit_per_email_returns_429
+tests/test_auth_rate_limit.py::test_uvicorn_proxy_kwargs_disable_headers_when_untrusted
+tests/test_auth_rate_limit.py::test_register_rate_limit_per_ip_returns_429
+tests/test_auth_rate_limit.py::test_name_addr_rate_limit_key_matches_bare_email
+tests/test_auth_rate_limit.py::test_login_email_rate_limit_uses_canonical_email
+tests/test_auth_rate_limit.py::test_forged_xff_from_untrusted_peer_is_ignored
+tests/test_auth_rate_limit.py::test_xff_used_only_from_trusted_proxy
+tests/test_auth_rate_limit.py::test_xff_appended_by_trusted_proxy_uses_rightmost_untrusted
+9 tests collected
+```
+
+Depois (4 HTTP que batem no Postgres saíram da seleção):
+
+```
+tests/test_auth_rate_limit.py::test_xff_appended_by_trusted_proxy_uses_rightmost_untrusted
+tests/test_auth_rate_limit.py::test_xff_used_only_from_trusted_proxy
+tests/test_auth_rate_limit.py::test_uvicorn_proxy_kwargs_disable_headers_when_untrusted
+tests/test_auth_rate_limit.py::test_forged_xff_from_untrusted_peer_is_ignored
+tests/test_auth_rate_limit.py::test_name_addr_rate_limit_key_matches_bare_email
+5/9 tests collected (4 deselected)
+```
 
 ## 7. Achados
 
@@ -80,6 +109,9 @@ IDs consolidados (sem duplicar A6+QA1+I1, A4, etc.). Cada item: problema, onde, 
 | G1 | P2 exp | Uvicorn default honra XFF no loopback; app lia o hop da esquerda | `uvicorn` + `request_context.py` | peer 127.0.0.1 + XFF variando → 201×N | Bypass do rate limit por IP | `python -m app` alinha `proxy_headers`; cadeia da direita | `test_uvicorn_empty_trusted_proxies_ignores_forged_xff` |
 | M6 | P3 | Rollback do `IntegrityError` sem teste | `services/auth.py` | mutante tira o rollback e a suíte passa | Sessão suja se o close falhar | teste de fake session conta rollback | `test_register_rolls_back_on_integrity_error` |
 | G8 | P1 | `email_rate_limit_key` via `validate_email` recusa `Nome <victim@host>` e o fallback vira chave por nome | `core/emailcanon.py` | 6 logins com nomes distintos, mesmo addr-spec, todos 401 | Bypass do teto 5/60 s (ADR 0007) | Mesmo `EmailStr` do login/cadastro + lower; ADR justifica não recusar name-addr | `test_login_name_addr_display_names_share_email_limit` |
+| P1 | P1 | Testes HTTP/SQL sem `@pytest.mark.integration` fogem da guarda da Fase 1 | `conftest.py`, `test_auth_rate_limit.py`, `test_auth_login.py` | pytest sem marcador contra outro `POSTGRES_DB` | Risco de escrever em `nexus_ai` | Marcar quem toca o banco; guard autouse bloqueia connect; job CI unitário sem Postgres | `test_unmarked_test_cannot_open_database_connection` |
+| P2-cap | P2 | `_enforce_cap` evictava chaves com janela ativa | `core/rate_limit.py` | encher 4096 chaves novas depois de bloquear uma vítima | Bypass silencioso do teto | Só poda expiradas; chave nova em mapa cheio → 429 + warning sem PII | `test_limiter_keeps_active_key_when_at_capacity` |
+| P2-log | P2 | `redact_text` no traceback completo deixa segredo em texto livre | `exception_handlers.py` | 500 cuja mensagem é um sentinela sem padrão | Credencial no log | Fora de development: tipo + frames; traceback completo só em development | `test_non_development_500_log_omits_sentinel_and_cause_message` |
 
 **Concordâncias e discordâncias com os relatórios**
 
@@ -94,18 +126,19 @@ IDs consolidados (sem duplicar A6+QA1+I1, A4, etc.). Cada item: problema, onde, 
 
 O que mudou (código) e como foi testado:
 
-1. Logging: `core/logging.py` (filtro), `RequestContextMiddleware` (não relança, `X-Request-ID`), `hide_parameters=True`. Testes de redação e 500 com `raise_server_exceptions=True`.
+1. Logging: `core/logging.py` (filtro), `RequestContextMiddleware` (não relança, `X-Request-ID`), `hide_parameters=True`. Fora de development o 500 interno loga só tipo, `request_id` e frames.
 2. Controle Cc nos schemas → 422. Teste de schema e HTTP.
 3. `fastapi_debug` só em development; OpenAPI off em production.
 4. Validação JWT por whitespace, placeholder repetido e entropia, sem ecoar o valor.
 5. Argon2id com constantes iguais à política anterior + teste de parâmetros.
 6. Pool explícito + `pool_pre_ping`.
 7. Hash antes do SQL no cadastro; `commit` de leitura antes do verify no login; testes de ordem e `/me` concorrente com verify lento, inclusive com `pool_size=1`/`max_overflow=0`.
-8. Rate limit em memória + 429; XFF só com proxy confiável; `python -m app` alinha o uvicorn; hops da direita; poda de chaves; chave de email = `EmailStr` + lower (name-addr compartilhado); `TRUSTED_PROXIES=*` recusado na config.
+8. Rate limit em memória + 429; XFF só com proxy confiável; `python -m app` alinha o uvicorn; hops da direita; teto de chaves fail-closed (sem evict de janela ativa); chave de email = `EmailStr` + lower; `TRUSTED_PROXIES=*` recusado na config.
 9. Register genérico 201; testes HTTP e UNIQUE sob corrida mantidos no service.
-10. CI GitHub Actions.
+10. CI GitHub Actions: job `unit` (`pytest -m "not integration"` sem Postgres) e job `test` com Postgres 17 + suíte completa.
 11. README, ADRs 0003–0007, `docs/api/users.md`.
 12. QA11: cleanup e host local na guarda.
+13. Guard de testes: fixture autouse intercepta `dialect.connect` / psycopg em testes sem `integration`; marcadores nos HTTP/SQL que faltavam.
 
 ## 9. Riscos residuais
 

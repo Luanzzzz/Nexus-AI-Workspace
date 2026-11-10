@@ -137,6 +137,7 @@ def test_login_failures_share_identical_401(active_user, caplog):
     _assert_no_leaks(caplog.text)
 
 
+@pytest.mark.integration
 def test_login_nul_password_returns_401():
     response = _CLIENT.post(
         _URL,
@@ -185,6 +186,7 @@ def test_login_malformed_json_returns_422_without_password(caplog):
     assert _WRONG_PASSWORD not in caplog.text
 
 
+@pytest.mark.integration
 def test_login_verification_failure_returns_controlled_500(monkeypatch, caplog):
     async def fail(self: AuthService, credentials: LoginRequest):
         raise CredentialVerificationError
@@ -203,6 +205,7 @@ def test_login_verification_failure_returns_controlled_500(monkeypatch, caplog):
     _assert_no_leaks(caplog.text, email)
 
 
+@pytest.mark.integration
 def test_login_database_error_returns_controlled_500(monkeypatch, caplog):
     leaked = "postgresql://usuario:segredo-do-banco@127.0.0.1:5433/db"
 

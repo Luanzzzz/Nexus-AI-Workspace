@@ -1,7 +1,10 @@
 """OpenAPI desligado em production; debug não devolve traceback ao cliente."""
 
+from collections.abc import AsyncIterator
+
 from fastapi.testclient import TestClient
 
+from app.api.dependencies.database import get_db
 from app.core.config import settings
 from app.main import create_app
 from app.schemas.user import LoginRequest
@@ -23,10 +26,14 @@ def test_debug_true_does_not_put_traceback_on_client(monkeypatch):
     async def fail(self: AuthService, credentials: LoginRequest):
         raise RuntimeError("traceback-secreto-nao-pode-sair")
 
+    async def fake_db() -> AsyncIterator[object]:
+        yield object()
+
     monkeypatch.setattr(AuthService, "authenticate", fail)
     monkeypatch.setattr(settings, "environment", "development")
     monkeypatch.setattr(settings, "debug", True)
     debug_app = create_app()
+    debug_app.dependency_overrides[get_db] = fake_db
     client = TestClient(debug_app, raise_server_exceptions=True)
 
     response = client.post(

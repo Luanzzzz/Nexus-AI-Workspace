@@ -96,7 +96,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 - Não há refresh token nem revogação. Um token vale até `exp` (30 minutos).
 - Há rate limit em memória por processo (login por IP e por email; cadastro por IP). Vários workers uvicorn não compartilham o teto. Ver [ADR 0007](../decisions/0007-rate-limit-proxy-e-cadastro-generico.md).
 - O teto de concorrência do Argon2id continua o do executor padrão do asyncio; precisa de dimensionamento na VPS de destino.
-- Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização). Em production as docs OpenAPI ficam desligadas. O 500 do cliente é sempre JSON genérico; o traceback fica só no log, já filtrado.
+- Produção exige `DEBUG=false` (`ENVIRONMENT=production` com `DEBUG=true` impede a inicialização). Em production as docs OpenAPI ficam desligadas. O 500 do cliente é sempre JSON genérico. Fora de `development` o log interno não inclui a mensagem da exceção nem traceback completo — só tipo, `request_id` e frames.
 - O token só é aceito com `sub` inteiro positivo (até 2147483647) e `iat`/`exp` inteiros válidos; qualquer outra forma é rejeitada como token inválido.
 - A única rota que consome o token é [`GET /api/v1/auth/me`](#usuário-atual).
 

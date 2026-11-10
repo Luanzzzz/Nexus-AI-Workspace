@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from threading import Lock
 from time import monotonic
 
 _DEFAULT_MAX_KEYS = 4096
 _PRUNE_EVERY = 32
+
+logger = logging.getLogger(__name__)
 
 
 class SlidingWindowLimiter:
@@ -27,15 +30,27 @@ class SlidingWindowLimiter:
             self._ops += 1
             if self._ops % _PRUNE_EVERY == 0:
                 self._drop_expired(now, window_seconds)
-            stamps = self._hits[key]
             cutoff = now - window_seconds
-            stamps[:] = [stamp for stamp in stamps if stamp > cutoff]
+            stamps = self._hits.get(key)
+            if stamps is not None:
+                stamps[:] = [stamp for stamp in stamps if stamp > cutoff]
+                if not stamps:
+                    del self._hits[key]
+                    stamps = None
+            if stamps is None:
+                if len(self._hits) >= self._max_keys:
+                    self._drop_expired(now, window_seconds)
+                if len(self._hits) >= self._max_keys:
+                    logger.warning(
+                        "limitador saturado; recusando chave nova (sem evict de janela ativa)"
+                    )
+                    return False, max(int(window_seconds), 1)
+                stamps = self._hits[key]
             if len(stamps) >= limit:
                 oldest = stamps[0]
                 retry_after = int(window_seconds - (now - oldest)) + 1
                 return False, max(retry_after, 1)
             stamps.append(now)
-            self._enforce_cap()
             return True, 0
 
     def _drop_expired(self, now: float, window_seconds: float) -> None:
@@ -46,17 +61,6 @@ class SlidingWindowLimiter:
             if not stamps or stamps[-1] <= cutoff
         ]
         for key in expired:
-            del self._hits[key]
-
-    def _enforce_cap(self) -> None:
-        overflow = len(self._hits) - self._max_keys
-        if overflow <= 0:
-            return
-        oldest_keys = sorted(
-            self._hits,
-            key=lambda item: self._hits[item][-1] if self._hits[item] else 0,
-        )[:overflow]
-        for key in oldest_keys:
             del self._hits[key]
 
     def reset(self) -> None:

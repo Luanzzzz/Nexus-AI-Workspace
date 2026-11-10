@@ -1,7 +1,6 @@
 """Erros HTTP que não podem repetir dados sensíveis do pedido."""
 
 import logging
-import traceback
 from collections.abc import Mapping, Sequence
 
 from fastapi import Request, status
@@ -9,7 +8,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.core.logging import redact_text, request_id_ctx
+from app.core.config import settings
+from app.core.logging import exception_log_text, request_id_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def internal_error_response(request: Request, exc: Exception) -> JSONResponse:
         "Erro interno request_id=%s type=%s\n%s",
         request_id,
         type(exc).__name__,
-        redact_text("".join(traceback.format_exception(exc))),
+        exception_log_text(exc, environment=settings.environment),
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -41,6 +41,7 @@ def _login_payload(email: str) -> dict[str, str]:
     return {"email": email, "password": "senha-errada-ficticia"}
 
 
+@pytest.mark.integration
 def test_login_rate_limit_per_email_returns_429(enable_limits):
     email = f"limit-{uuid4().hex}@example.com"
     first = _CLIENT.post("/api/v1/auth/login", json=_login_payload(email))
@@ -63,6 +64,7 @@ async def _delete_emails(emails: list[str]) -> None:
         await session.commit()
 
 
+@pytest.mark.integration
 def test_register_rate_limit_per_ip_returns_429(enable_limits):
     emails = [f"reg-{uuid4().hex}@example.com" for _ in range(3)]
 
@@ -126,6 +128,7 @@ def test_uvicorn_proxy_kwargs_disable_headers_when_untrusted(monkeypatch):
     }
 
 
+@pytest.mark.integration
 def test_login_email_rate_limit_uses_canonical_email(enable_limits):
     mixed = "  Limit.User+tag@Example.COM  "
     canonical = email_rate_limit_key(mixed)
@@ -146,6 +149,7 @@ def test_name_addr_rate_limit_key_matches_bare_email():
     assert email_rate_limit_key(victim) == victim
 
 
+@pytest.mark.integration
 def test_login_name_addr_display_names_share_email_limit(monkeypatch):
     monkeypatch.setattr(settings, "auth_rate_limit_enabled", True)
     monkeypatch.setattr(settings, "auth_login_per_ip_limit", 100)

@@ -4,6 +4,7 @@ import os
 import secrets
 from collections.abc import Iterator
 
+import psycopg
 import pytest
 
 from app.core.rate_limit import limiter
@@ -13,10 +14,20 @@ from app.core.rate_limit import limiter
 os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
 os.environ["AUTH_RATE_LIMIT_ENABLED"] = "false"
 
-from app.db.session import database_url  # noqa: E402
+from app.db.session import database_url, engine  # noqa: E402
 
 TEST_DATABASE_NAME = "nexus_ai_test"
 ALLOWED_TEST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+UNMARKED_DB_ACCESS_MESSAGE = (
+    "Teste sem @pytest.mark.integration tentou abrir conexão com o banco "
+    "antes de qualquer SQL. Marque o teste com @pytest.mark.integration "
+    "ou não acesse o PostgreSQL."
+)
+
+
+class UnmarkedDatabaseAccessError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(UNMARKED_DB_ACCESS_MESSAGE)
 
 
 def is_safe_test_database(database: str | None, host: str | None) -> bool:
@@ -56,3 +67,24 @@ def _reset_rate_limiter() -> Iterator[None]:
     limiter.reset()
     yield
     limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _block_unmarked_database_access(
+    request: pytest.FixtureRequest, monkeypatch
+) -> Iterator[None]:
+    if request.node.get_closest_marker("integration") is not None:
+        yield
+        return
+
+    def _blocked_sync(*_args, **_kwargs):
+        raise UnmarkedDatabaseAccessError()
+
+    async def _blocked_async(*_args, **_kwargs):
+        raise UnmarkedDatabaseAccessError()
+
+    monkeypatch.setattr(engine.sync_engine.dialect, "connect", _blocked_sync)
+    monkeypatch.setattr(engine.sync_engine.pool, "connect", _blocked_sync)
+    monkeypatch.setattr(psycopg.Connection, "connect", _blocked_sync)
+    monkeypatch.setattr(psycopg.AsyncConnection, "connect", _blocked_async)
+    yield
