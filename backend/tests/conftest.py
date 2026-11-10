@@ -1,11 +1,16 @@
 """Configuração compartilhada do pytest."""
 
+from __future__ import annotations
+
 import os
 import secrets
 from collections.abc import Iterator
+from contextvars import ContextVar
 
 import psycopg
 import pytest
+from psycopg.conninfo import conninfo_to_dict
+from sqlalchemy.engine.default import DefaultDialect
 
 from app.core.rate_limit import limiter
 
@@ -14,7 +19,7 @@ from app.core.rate_limit import limiter
 os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
 os.environ["AUTH_RATE_LIMIT_ENABLED"] = "false"
 
-from app.db.session import database_url, engine  # noqa: E402
+from app.db.session import database_url  # noqa: E402
 
 TEST_DATABASE_NAME = "nexus_ai_test"
 ALLOWED_TEST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -24,10 +29,24 @@ UNMARKED_DB_ACCESS_MESSAGE = (
     "ou não acesse o PostgreSQL."
 )
 
+_allow_marked_connect: ContextVar[bool] = ContextVar(
+    "allow_marked_connect", default=False
+)
+_guards_installed = False
+_original_dialect_connect = DefaultDialect.connect
+_original_psycopg_connect = psycopg.connect
+_original_connection_connect = psycopg.Connection.connect
+_original_async_connection_connect = psycopg.AsyncConnection.connect
+
 
 class UnmarkedDatabaseAccessError(RuntimeError):
     def __init__(self) -> None:
         super().__init__(UNMARKED_DB_ACCESS_MESSAGE)
+
+
+class UnsafeTestDatabaseError(RuntimeError):
+    def __init__(self, database: str | None, host: str | None) -> None:
+        super().__init__(_protection_failure_message(database, host))
 
 
 def is_safe_test_database(database: str | None, host: str | None) -> bool:
@@ -43,6 +62,67 @@ def _protection_failure_message(
         f"Banco configurado: {configured_database!r} host={host!r}. "
         "Defina POSTGRES_DB=nexus_ai_test e POSTGRES_HOST local antes do pytest."
     )
+
+
+def _effective_dbname_and_host(
+    *cargs: object, **cparams: object
+) -> tuple[str | None, str | None]:
+    merged: dict[str, object] = {}
+    if cargs and isinstance(cargs[0], str) and cargs[0]:
+        try:
+            merged.update(conninfo_to_dict(cargs[0]))
+        except Exception:
+            pass
+    merged.update(cparams)
+    dbname = merged.get("dbname", merged.get("database"))
+    host = merged.get("host")
+    return (
+        str(dbname) if dbname is not None else None,
+        str(host) if host is not None else None,
+    )
+
+
+def _assert_connection_allowed(*cargs: object, **cparams: object) -> None:
+    dbname, host = _effective_dbname_and_host(*cargs, **cparams)
+    if not is_safe_test_database(dbname, host):
+        raise UnsafeTestDatabaseError(dbname, host)
+    if not _allow_marked_connect.get():
+        raise UnmarkedDatabaseAccessError()
+
+
+def _guarded_dialect_connect(self: object, *cargs: object, **cparams: object):
+    _assert_connection_allowed(*cargs, **cparams)
+    return _original_dialect_connect(self, *cargs, **cparams)
+
+
+def _guarded_psycopg_connect(*cargs: object, **cparams: object):
+    _assert_connection_allowed(*cargs, **cparams)
+    return _original_psycopg_connect(*cargs, **cparams)
+
+
+def _guarded_connection_connect(*cargs: object, **cparams: object):
+    _assert_connection_allowed(*cargs, **cparams)
+    return _original_connection_connect(*cargs, **cparams)
+
+
+async def _guarded_async_connection_connect(*cargs: object, **cparams: object):
+    _assert_connection_allowed(*cargs, **cparams)
+    return await _original_async_connection_connect(*cargs, **cparams)
+
+
+def _install_connection_guards() -> None:
+    global _guards_installed
+    if _guards_installed:
+        return
+    DefaultDialect.connect = _guarded_dialect_connect  # type: ignore[method-assign]
+    psycopg.connect = _guarded_psycopg_connect  # type: ignore[assignment]
+    psycopg.Connection.connect = _guarded_connection_connect  # type: ignore[method-assign]
+    psycopg.AsyncConnection.connect = _guarded_async_connection_connect  # type: ignore[method-assign]
+    _guards_installed = True
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    _install_connection_guards()
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -62,29 +142,20 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     )
 
 
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    if item.get_closest_marker("integration") is None:
+        yield
+        return
+    token = _allow_marked_connect.set(True)
+    try:
+        yield
+    finally:
+        _allow_marked_connect.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter() -> Iterator[None]:
     limiter.reset()
     yield
     limiter.reset()
-
-
-@pytest.fixture(autouse=True)
-def _block_unmarked_database_access(
-    request: pytest.FixtureRequest, monkeypatch
-) -> Iterator[None]:
-    if request.node.get_closest_marker("integration") is not None:
-        yield
-        return
-
-    def _blocked_sync(*_args, **_kwargs):
-        raise UnmarkedDatabaseAccessError()
-
-    async def _blocked_async(*_args, **_kwargs):
-        raise UnmarkedDatabaseAccessError()
-
-    monkeypatch.setattr(engine.sync_engine.dialect, "connect", _blocked_sync)
-    monkeypatch.setattr(engine.sync_engine.pool, "connect", _blocked_sync)
-    monkeypatch.setattr(psycopg.Connection, "connect", _blocked_sync)
-    monkeypatch.setattr(psycopg.AsyncConnection, "connect", _blocked_async)
-    yield

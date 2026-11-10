@@ -163,6 +163,13 @@ Cada residual: problema, onde, reproduzir, impacto, por que ficou, condição de
 | Limitador | Estado por processo | `rate_limit.py` | 2 workers × teto | Teto efetivo dobra | Sem Redis | Store compartilhado ou proxy | Dois processos, N+1 ainda 200 |
 | Locale PG | `lower()` só em C.UTF-8 | CHECK email | Python 3.13 / `en_US.utf8` | 500 de CHECK | Não reexecutado | Repetir no locale de produção | Script de code points |
 | Entrada uvicorn | `uvicorn app.main:app` sem flags | CLI | Default honra XFF no loopback | G1 volta | Documentado; `python -m app` é a entrada | Proibir o CLI cru no deploy | Teste G1 contra o comando de produção |
+| B3 | SQL no import/coleta do módulo de teste | import time | `engine.connect()` no topo do arquivo | Bypass se o erro for engolido | Fora desta rodada | Falhar coleta se houver checkout | Import que conecta quebra a sessão |
+| B4 | Referência a `connect` capturada antes do guard | `async_creator=ref` | guardar `AsyncConnection.connect` no import | Patch não alcança a ref | Monkeypatch não cobre | pytest-socket / porta 1 | Creator direto ainda conecta |
+| B5 | `asyncpg` / `postgresql+asyncpg` | driver ausente no repo | `asyncpg.connect` | SQL no banco configurado | asyncpg não é dependência | Patch se o pacote entrar | Teste com asyncpg |
+| B6 | libpq cru (`PGconn`), socket v3, subprocess | C / OS | `psycopg.pq.PGconn.connect` | Fora do Python | Patch não alcança | Job `unit` porta 1; pytest-socket | Subprocesso passa no silêncio |
+| M1 | Guard vira HTTP 500 no TestClient | middleware 500 | login sem marcador | Teste “500” passa pelo motivo errado | Fora desta rodada | `pytest.fail` no teardown | pytester no login |
+| G1 | `PGHOSTADDR` desvia o host da libpq | env | `PGHOSTADDR` ≠ `POSTGRES_HOST` | Host efetivo não é o da URL | Só `host` nos cparams | Abortar se `PGHOSTADDR` existir | Setup falha com o env |
+| G2 | Integration monta URL/`engine` próprio | `create_engine` | `database=nexus_ai` no connect | Mitigado: `DefaultDialect.connect` recusa dbname/host efetivos ≠ `nexus_ai_test` local | Caiu de graça com a checagem no connect | — | `test_integration_rejects_wrong_database_name` |
 
 ## 10. Conclusão
 
