@@ -88,6 +88,7 @@ def test_login_returns_decodable_bearer_token(active_user, caplog):
     body = response.json()
     assert set(body) == {"access_token", "token_type"}
     assert body["token_type"] == "bearer"
+    assert response.headers.get("cache-control") == "no-store"
     token = body["access_token"]
     assert decode_access_token(token).user_id == user_id
 
@@ -129,6 +130,7 @@ def test_login_failures_share_identical_401(active_user, caplog):
         assert response.status_code == 401
         assert response.json() == {"detail": "Credenciais inválidas."}
         assert response.headers["WWW-Authenticate"] == "Bearer"
+        assert response.headers.get("cache-control") == "no-store"
         assert response.text == responses[0].text
         assert "access_token" not in response.text
         _assert_no_leaks(response.text)

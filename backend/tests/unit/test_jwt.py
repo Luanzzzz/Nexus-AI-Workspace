@@ -188,27 +188,36 @@ def test_max_user_id_subject_accepted():
     )
 
 
-def _ts():
-    return int(datetime.now(UTC).timestamp())
-
-
 @pytest.mark.parametrize(
-    "overrides",
+    "kind",
     [
-        {"iat": str(_ts())},
-        {"exp": str(_ts() + 600)},
-        {"exp": 10**20},
-        {"exp": 253_402_300_800},
-        {"iat": _ts() + 0.0},
-        {"exp": _ts() + 600.5},
-        {"iat": True},
-        {"exp": True},
-        {"iat": 0},
-        {"iat": -1},
+        "iat-str",
+        "exp-str",
+        "exp-huge",
+        "exp-overflow",
+        "iat-float",
+        "exp-float",
+        "iat-bool",
+        "exp-bool",
+        "iat-zero",
+        "iat-negative",
     ],
-    ids=repr,
 )
-def test_malformed_timestamps_with_valid_signature_rejected(overrides):
+def test_malformed_timestamps_with_valid_signature_rejected(kind):
+    ts = int(datetime.now(UTC).timestamp())
+    overrides = {
+        "iat-str": {"iat": str(ts)},
+        "exp-str": {"exp": str(ts + 600)},
+        "exp-huge": {"exp": 10**20},
+        "exp-overflow": {"exp": 253_402_300_800},
+        "iat-float": {"iat": ts + 0.0},
+        "exp-float": {"exp": ts + 600.5},
+        "iat-bool": {"iat": True},
+        "exp-bool": {"exp": True},
+        "iat-zero": {"iat": 0},
+        "iat-negative": {"iat": -1},
+    }[kind]
+
     with pytest.raises(InvalidTokenError) as exc_info:
         decode_access_token(_encode(_fresh_payload(**overrides)))
 
@@ -241,6 +250,10 @@ def test_type_error_from_pyjwt_decode_maps_to_invalid_token(monkeypatch):
 
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__suppress_context__ is True
+
+
+def _ts() -> int:
+    return int(datetime.now(UTC).timestamp())
 
 
 def test_exp_not_after_iat_rejected():

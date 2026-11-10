@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.user import User
-from app.schemas.user import UserRegister, UserResponse
+from app.schemas.user import LoginRequest, UserRegister, UserResponse
 
 # Senha fictícia dentro da política de 15 a 128 caracteres.
 _VALID_PASSWORD = "senha-ficticia-ok"
@@ -242,3 +242,28 @@ def test_user_register_accepts_password_within_length_policy(password):
     # Sem strip, sem minúsculas e sem hashing: a senha permanece o texto recebido.
     assert user_register.password == password
     assert not user_register.password.startswith("$argon2")
+
+
+@pytest.mark.parametrize("bad", ["Ana\x00Silva", "Ana\x1fSilva", "Ana\x7fSilva"])
+def test_user_register_rejects_control_characters_in_name(bad):
+    with pytest.raises(ValidationError) as exc_info:
+        UserRegister.model_validate(
+            {
+                "name": bad,
+                "email": "ana@example.com",
+                "password": _VALID_PASSWORD,
+            }
+        )
+
+    errors = exc_info.value.errors()
+    assert any(error["loc"] == ("name",) for error in errors)
+
+
+def test_login_request_rejects_nul_in_password():
+    with pytest.raises(ValidationError) as exc_info:
+        LoginRequest.model_validate(
+            {"email": "ana@example.com", "password": "senha-ficticia\x00x"}
+        )
+
+    errors = exc_info.value.errors()
+    assert any(error["loc"] == ("password",) for error in errors)

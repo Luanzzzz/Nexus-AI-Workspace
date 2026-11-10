@@ -58,6 +58,30 @@ def test_settings_rejects_placeholder_jwt_secret(monkeypatch, placeholder):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize(
+    "weak",
+    [
+        "a" * 32,
+        "changemechangemechangemechangeme",
+        "CHANGE_ME_LOCAL_CHANGE_ME_LOCAL_",
+        "your-secret-key-your-secret-key!",
+        " " * 32,
+    ],
+)
+def test_settings_rejects_weak_or_placeholder_jwt_secret(monkeypatch, weak):
+    monkeypatch.setenv("JWT_SECRET_KEY", weak)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    message = str(exc_info.value)
+    stripped = weak.strip()
+    if stripped:
+        assert stripped not in message
+        if len(stripped) >= 8:
+            assert stripped[:8] not in message
+
+
 def test_settings_rejects_other_jwt_algorithm(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
     monkeypatch.setenv("JWT_ALGORITHM", "none")
@@ -94,8 +118,11 @@ def test_settings_rejects_debug_in_production(monkeypatch):
         Settings(_env_file=None)
 
     message = str(exc_info.value)
+    secret = os.environ["JWT_SECRET_KEY"]
     assert "DEBUG deve ser False" in message
-    assert os.environ["JWT_SECRET_KEY"] not in message
+    assert secret not in message
+    assert secret[-8:] not in message
+    assert secret[:8] not in message
 
 
 def test_settings_accepts_production_without_debug(monkeypatch):

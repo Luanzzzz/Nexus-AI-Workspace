@@ -21,6 +21,7 @@ from app.db.session import SessionLocal, engine
 from app.models.user import User
 from app.repositories.user import UserRepository
 from app.schemas.user import UserRegister
+from app.services import auth as auth_module
 from app.services.auth import AuthService
 
 _PASSWORD = "senha-ficticia-ok"
@@ -77,14 +78,27 @@ async def test_register_stores_argon2id_hash_and_rejects_same_email():
         assert user.password_hash.startswith("$argon2id$")
         assert verify_password(_PASSWORD, user.password_hash)
 
-        with pytest.raises(DuplicateEmailError):
-            await service.register(
-                UserRegister(
-                    name="Ana Silva",
-                    email=email,
-                    password=_PASSWORD,
-                ),
-            )
+        hash_calls = 0
+        original_hash = auth_module.hash_password
+
+        def counting_hash(password: str) -> str:
+            nonlocal hash_calls
+            hash_calls += 1
+            return original_hash(password)
+
+        auth_module.hash_password = counting_hash
+        try:
+            with pytest.raises(DuplicateEmailError):
+                await service.register(
+                    UserRegister(
+                        name="Ana Silva",
+                        email=email,
+                        password=_PASSWORD,
+                    ),
+                )
+        finally:
+            auth_module.hash_password = original_hash
+        assert hash_calls == 1
 
     async with SessionLocal() as session:
         # O rollback externo desfaz o commit do SAVEPOINT.
@@ -96,33 +110,36 @@ async def test_register_stores_argon2id_hash_and_rejects_same_email():
 async def test_register_rolls_back_when_persistence_fails():
     email = _email()
 
-    async with SessionLocal() as session:
-        service = AuthService(session)
-        create_user = service.users.create_user
+    try:
+        async with SessionLocal() as session:
+            service = AuthService(session)
+            create_user = service.users.create_user
 
-        async def fail_after_flush(
-            *,
-            name: str,
-            email: str,
-            password_hash: str,
-        ) -> User:
-            await create_user(
-                name=name,
-                email=email,
-                password_hash=password_hash,
-            )
-            raise RuntimeError("falha de persistência")
+            async def fail_after_flush(
+                *,
+                name: str,
+                email: str,
+                password_hash: str,
+            ) -> User:
+                await create_user(
+                    name=name,
+                    email=email,
+                    password_hash=password_hash,
+                )
+                raise RuntimeError("falha de persistência")
 
-        service.users.create_user = fail_after_flush
-        with pytest.raises(RuntimeError, match="falha de persistência"):
-            await service.register(
-                UserRegister(name="Ana Silva", email=email, password=_PASSWORD),
-            )
-        # Sem o rollback do serviço, este commit gravaria o flush pela metade.
-        await session.commit()
+            service.users.create_user = fail_after_flush
+            with pytest.raises(RuntimeError, match="falha de persistência"):
+                await service.register(
+                    UserRegister(name="Ana Silva", email=email, password=_PASSWORD),
+                )
+            # Sem o rollback do serviço, este commit gravaria o flush pela metade.
+            await session.commit()
 
-    async with SessionLocal() as session:
-        assert await UserRepository(session).get_by_email(email) is None
+        async with SessionLocal() as session:
+            assert await UserRepository(session).get_by_email(email) is None
+    finally:
+        await _delete_user(email)
 
 
 @pytest.mark.asyncio
@@ -154,27 +171,32 @@ async def test_register_rolls_back_when_initial_lookup_fails():
 async def test_register_does_not_hide_unrelated_integrity_error():
     email = _email()
 
-    async with SessionLocal() as session:
-        service = AuthService(session)
+    try:
+        async with SessionLocal() as session:
+            service = AuthService(session)
 
-        async def other_constraint(
-            *,
-            name: str,
-            email: str,
-            password_hash: str,
-        ) -> User:
-            del name, email, password_hash
-            raise IntegrityError("INSERT INTO users", {}, Exception("outra restrição"))
+            async def other_constraint(
+                *,
+                name: str,
+                email: str,
+                password_hash: str,
+            ) -> User:
+                del name, email, password_hash
+                raise IntegrityError(
+                    "INSERT INTO users", {}, Exception("outra restrição")
+                )
 
-        service.users.create_user = other_constraint
-        with pytest.raises(IntegrityError):
-            await service.register(
-                UserRegister(name="Ana Silva", email=email, password=_PASSWORD),
-            )
-        await session.commit()
+            service.users.create_user = other_constraint
+            with pytest.raises(IntegrityError):
+                await service.register(
+                    UserRegister(name="Ana Silva", email=email, password=_PASSWORD),
+                )
+            await session.commit()
 
-    async with SessionLocal() as session:
-        assert await UserRepository(session).get_by_email(email) is None
+        async with SessionLocal() as session:
+            assert await UserRepository(session).get_by_email(email) is None
+    finally:
+        await _delete_user(email)
 
 
 @pytest.mark.integration
