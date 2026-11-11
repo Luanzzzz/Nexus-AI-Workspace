@@ -219,3 +219,53 @@ Não coberto por nenhum teste: concorrência de upload/delete, liberação de co
 6. **Aceitar F01** (spool pré-autenticação e chunked sem teto) para o estudo local, ou exigir o middleware de contagem de bytes antes do merge.
 7. **Aceitar F04** (sem cota nem rate limit em workspaces/documentos).
 8. **Corrigir F03** agora (pequeno, mesma classe da Fase 2) ou registrar como residual.
+
+## 10. Revalidação (commits `dd6d307`..`b691cd0`)
+
+Escopo: reauditoria independente das correções de F01, F02, F05, F06, F07, F08 e F09. Nenhum código, teste ou ADR foi alterado por mim; as mutações abaixo foram aplicadas e revertidas com `git checkout` (`git status` limpo).
+
+### 10.1 Validação
+
+| Comando | Resultado |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` | `All checks passed!` / `148 files already formatted` |
+| `POSTGRES_PORT=1 ... pytest -m "not integration" -q` | **313 passed**, 185 deselected |
+| `POSTGRES_DB=nexus_ai_test pytest -q` | **498 passed** |
+| `POSTGRES_DB=nexus_ai_test alembic check` | `No new upgrade operations detected.` |
+| `gh pr checks 2..5` | verdes, mas são as execuções anteriores: os commits de correção ainda não foram enviados, então o CI **não** os cobriu |
+
+### 10.2 Status por achado
+
+| ID | Status | Verificação |
+| --- | --- | --- |
+| F01 | **Parcial** (decisão do owner) | Probe ASGI com blocos de 64 KiB, corpo de 200 MiB: chunked -> 413 com **10 485 760 bytes** gravados (antes: 209 715 200); `Content-Length: 100` mentiroso -> idem; `Content-Length` declarado acima do teto -> 413 sem ler o corpo. O teto vale em todos os casos, mas o spool pré-autenticação continua existindo (até ~10 MiB + 64 KiB **por requisição**, sem limite de concorrência). Mutações: sem o swap de `receive` (N01), teto frouxo (N02), sem mapeamento para 413 (N03) e sem o guarda de `Content-Length` (N04) são todas mortas por `test_chunked_body_far_over_limit_is_aborted_with_413` e `test_declared_content_length_over_limit_never_reads_body`. ADR 0009 reescrito e fiel ao comportamento |
+| F02 | **Corrigido** | ADR 0008 agora diz que o corpo é lido (e gravado acima de 1 MiB) antes da autenticação e remete ao ADR 0009; coerente com o probe |
+| F05 | **Corrigido** | O teste do `Content-Length` agora falha sem o guarda (N04). `test_list_blobs_skips_symlinked_blobs_and_shards` mata a mutação que segue symlink (N12; antes M35 sobrevivia) |
+| F06 | **Corrigido** | `_run_to_completion` espera a thread terminar (re-await do `shield` a cada cancelamento, repassa `CancelledError` ao final); `_Descriptors` registra cada fd na própria thread e zera antes de fechar; nenhum fd é fechado enquanto uma thread ainda o usa, logo sem reuso de número. Mortas: `to_thread` simples (N05), `close_all` sem root (N14), sem `unlink` do `.part` (N13). **Sobrevive** N06 (`close()` sem zerar o atributo, que causaria fechamento duplo de fd): ver G03 |
+| F07 | **Corrigido** | 401/403/404 declarados em todas as rotas de documentos e workspaces (conferido no `openapi()`); N11 morta por `test_workspace_and_document_routes_document_error_responses` |
+| F08 | **Corrigido** | Espaços Unicode colapsados (`a b` -> `a b`), variation selectors removidos, limite em **bytes** UTF-8 cortando em fronteira de caractere, NFKC rejeitado de forma documentada. Mortas: N08, N09, N10 |
+| F09 | **Corrigido** | `MIN_AGE_FLOOR_SECONDS = 60`; valores menores, negativos ou NaN geram `ValueError` antes de tocar o storage (N07 morta). Nota: os testes e a função tratam a idade de `.part` do mesmo modo |
+| F03, F04, F10-F14 | **Aberto — decisão do owner** | Sem alteração, como combinado. F03 (conexão do pool presa durante o I/O do upload) e F04 (sem cota) seguem bloqueantes para exposição pública |
+
+### 10.3 Análise de F01: fragilidade de `request._receive`
+
+- O código troca o atributo **privado** `Request._receive` (`api/v1/documents.py`, `request._receive = bounded_receive`). Starlette instalado: **1.10.0**; `pyproject.toml` pede apenas `starlette>=1.3.1`, sem teto. O parser de multipart lê `request.stream()`, que usa `self._receive`; funciona hoje.
+- Risco de upgrade: se uma versão futura renomear ou copiar o `receive`, a troca vira no-op silencioso e o teto some. Mitigação real: N01 mostra que o teste de 200 MiB chunked falha nesse caso, então o CI denuncia a regressão (ela só não aparece sem rodar a suíte).
+- Recomendação (Baixo, não bloqueante): migrar para um middleware ASGI puro, restrito ao caminho `POST .../documents`, que envolve `receive` antes de o Starlette criar o `Request`. É API pública, também limita a leitura que ocorre antes das dependencies e não depende de atributo privado. Alternativa mínima: limitar a versão (`starlette>=1.3.1,<2`) e manter o teste como guarda.
+- Cobertura do requisito: o teto limita bytes gravados tanto em chunked quanto com `Content-Length` mentiroso. Em produção, h11/httptools já rejeitam corpo maior que o `Content-Length` declarado; o probe em ASGI direto confirma que o teto não depende disso.
+
+### 10.4 Regressões e novos achados
+
+Não encontrei regressão funcional: suíte completa verde, comportamento antigo de 413/401/404 preservado, tamanhos de arquivo no limite exato ainda aceitos.
+
+| ID | Severidade | Achado |
+| --- | --- | --- |
+| G01 | Baixo | `request._receive` privado (seção 10.3); recomendar middleware ASGI puro ou teto de versão |
+| G02 | Informativo | O spool pré-autenticação ainda ocorre e não há limite de concorrência: 100 requisições anônimas simultâneas gravam ~1 GiB em `TMPDIR`. Mitigar com limite no proxy/rate limit (F04) ou mover a autenticação antes do parsing |
+| G03 | Baixo | Falta teste que detecte `_Descriptors.close()` sem zerar o atributo (N06 sobrevive). O código atual está correto (zera antes de fechar), mas a regressão causaria fechamento duplo de um número de fd possivelmente reaproveitado |
+| G04 | Informativo | `_run_to_completion`: se a thread falhar depois de cancelada, o `CancelledError` prevalece e a exceção da thread pode ser registrada como "never retrieved"; sem impacto funcional. Um blob já publicado antes do cancelamento não é removido (vira órfão recuperável pela reconciliação; ADR 0009 cobre) |
+| G05 | Informativo | O colapso de espaços altera nomes com espaços internos repetidos (`a  b.txt` -> `a b.txt`); intencional e documentado nos testes |
+
+### 10.5 Veredito atualizado
+
+**Aprovada com ressalvas, mais próxima do merge.** Nenhum achado Crítico ou Alto novo; F01 caiu de Alto para **Parcial/Médio** (spool limitado a ~10 MiB por requisição). Bloqueantes para o merge da fase: **nenhum** de código. Pendências que o owner deve aprovar explicitamente: F01 residual (spool pré-autenticação sem limite de concorrência), F03, F04 e as decisões da seção 9. Recomendo, antes de enviar: executar o CI nos commits de correção e considerar G01/G03. Para exposição pública continuam bloqueantes F03, F04 e G02, mais os residuais da Fase 2.
