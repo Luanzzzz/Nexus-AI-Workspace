@@ -4,7 +4,7 @@ Projeto de portfólio focado em backend Python, engenharia de IA (RAG e agentes)
 
 O objetivo é estudar e consolidar engenharia de software na prática, implementando as partes do sistema de forma incremental.
 
-**Status:** Fase 2 (Authentication) concluída no backend. Há cadastro, login com JWT HS256, `GET /auth/me`, hash Argon2id, rate limit em memória e CI no GitHub Actions. Frontend, RAG, agentes, RBAC e Documents ainda não foram implementados. A API **não está pronta para exposição pública**; ver [riscos residuais](docs/reviews/phase-2-authentication-audit.md).
+**Status:** Fase 2 (Authentication) concluída e Fase 3 (Workspaces e Documents) implementada no backend. Há cadastro, login com JWT HS256, `GET /auth/me`, hash Argon2id, rate limit em memória, workspaces com membership e papéis, upload/listagem/consulta/exclusão de documentos em storage local e CI no GitHub Actions. Frontend, RAG e agentes ainda não foram implementados; não há endpoints de administração de membros. A API **não está pronta para exposição pública**; ver [riscos residuais](docs/reviews/phase-2-authentication-audit.md).
 
 ## Stack planejada
 
@@ -27,6 +27,22 @@ Contrato: [docs/api/users.md](docs/api/users.md). Decisões: [ADR 0003](docs/dec
 
 Não há refresh token, logout nem revogação individual. Desativar ou remover a conta invalida o acesso na próxima chamada a `/me`.
 
+## Workspaces e documentos (Fase 3)
+
+Contratos: [docs/api/workspaces.md](docs/api/workspaces.md) e [docs/api/documents.md](docs/api/documents.md). Decisões: [ADR 0008](docs/decisions/0008-workspace-bootstrap-and-authorization.md) e [ADR 0009](docs/decisions/0009-document-local-storage.md).
+
+| Método | Rota | Notas |
+| --- | --- | --- |
+| `POST` | `/api/v1/workspaces` | Cria workspace e membership `owner` na mesma transação. Slug duplicado: 409 genérico. |
+| `GET` | `/api/v1/workspaces` | Só workspaces em que o usuário é membro. |
+| `GET` | `/api/v1/workspaces/{workspace_id}` | Qualquer papel; 404 sem membership. |
+| `POST` | `/api/v1/workspaces/{workspace_id}/documents` | Upload multipart (PDF, TXT, MD; até 10 MiB). Só `owner` e `admin`. |
+| `GET` | `/api/v1/workspaces/{workspace_id}/documents` | Listagem paginada (`limit` 1–100, padrão 20; `offset`). Qualquer papel. |
+| `GET` | `/api/v1/workspaces/{workspace_id}/documents/{document_id}` | Qualquer papel; documento de outro workspace é 404. |
+| `DELETE` | `/api/v1/workspaces/{workspace_id}/documents/{document_id}` | Só `owner` e `admin`; 204. Não é atômico entre banco e disco (ver ADR 0009). |
+
+Os blobs ficam no diretório indicado pela variável de ambiente `DOCUMENT_STORAGE_DIR` (padrão `backend/var/documents`, ignorado pelo Git). Nos testes, o `conftest.py` redireciona esse diretório para um temporário por teste. A reconciliação de blobs órfãos existe como função (`app/services/document_reconciliation.py`, `dry_run` por padrão), sem CLI nem agendador. Atrás de um proxy reverso, limite o tamanho do corpo das requisições de upload (ver ADR 0009).
+
 ## Verificação do backend
 
 Ruff, pytest e Alembic também podem ser executados na raiz. O pacote e as migrations ficam em `backend/`. Testes de integração exigem `POSTGRES_DB=nexus_ai_test` num host local (`127.0.0.1`, `localhost` ou `::1`).
@@ -38,6 +54,8 @@ POSTGRES_DB=nexus_ai_test python -m alembic upgrade head
 POSTGRES_DB=nexus_ai_test python -m alembic check
 POSTGRES_DB=nexus_ai_test python -m pytest
 ```
+
+Para rodar só os testes que não tocam o banco: `POSTGRES_PORT=1 POSTGRES_DB=nexus_ai_test python -m pytest -m "not integration"`. A suíte multi-tenant da Fase 3 está em `backend/tests/test_phase3_security.py`.
 
 O CI em [`.github/workflows/backend.yml`](.github/workflows/backend.yml) roda os mesmos passos contra um serviço Postgres.
 

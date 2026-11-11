@@ -13,3 +13,5 @@ Cada ADR deve registrar um problema, as opções consideradas e a decisão tomad
 - [0005: transação do cadastro sem session.begin()](0005-transacao-do-cadastro.md)
 - [0006: JWT de acesso com PyJWT e HS256](0006-jwt-access-token.md)
 - [0007: rate limit, proxy confiável e cadastro genérico](0007-rate-limit-proxy-e-cadastro-generico.md)
+- [0008: criação de workspace e autorização por papel](0008-workspace-bootstrap-and-authorization.md)
+- [0009: armazenamento local de documentos](0009-document-local-storage.md)
