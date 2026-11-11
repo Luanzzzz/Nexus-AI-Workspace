@@ -88,6 +88,10 @@ def test_unsupported_or_mismatched_type(name, client):
         ("  espaço.txt  ", "espaço.txt"),
         ("cafe\u0301.txt", "caf\u00e9.txt"),
         ("a\u202etxt.pdf", "atxt.pdf"),
+        ("a\u2028b\u2029c.txt", "a b c.txt"),
+        ("a\u00a0\u00a0b\u3000c\u2003d.md", "a b c d.md"),
+        ("a\ufe0fb\U000e0100c.txt", "abc.txt"),
+        ("ＮＯＴＥ.md", "ＮＯＴＥ.md"),  # NFC, não NFKC: nome preservado
     ],
 )
 def test_sanitize_filename(raw, expected):
@@ -121,3 +125,18 @@ async def test_validated_chunks_raises_on_finish_for_bad_utf8():
         async for chunk in validated_chunks(read, "text/plain"):
             seen.append(chunk)
     assert seen == [b"abc", b"\xc3"]
+
+
+def test_sanitize_filename_limit_is_in_utf8_bytes_on_char_boundary():
+    result = sanitize_filename("é" * 300 + ".pdf")
+
+    assert len(result.encode("utf-8")) <= 255
+    assert result.endswith(".pdf")
+    assert set(result[:-4]) == {"é"}  # nunca corta no meio de um caractere
+
+
+def test_sanitize_filename_byte_limit_without_extension():
+    result = sanitize_filename("日" * 200)
+
+    assert len(result.encode("utf-8")) <= 255
+    assert set(result) == {"日"}
