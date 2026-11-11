@@ -1,8 +1,10 @@
 """LocalDocumentStorage: sempre em tmp_path, sem banco."""
 
+import asyncio
 import os
 import re
 import stat
+import threading
 
 import pytest
 
@@ -167,3 +169,81 @@ def test_open_and_delete_on_missing_root(tmp_path):
     with pytest.raises(FileNotFoundError):
         storage.open(key)
     assert not os.path.exists(tmp_path / "nao-existe")
+
+
+def _open_fds() -> int | None:
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_cancel_mid_save_leaves_no_part_and_no_fd_leak(storage, tmp_path):
+    before = _open_fds()
+    if before is None:
+        pytest.skip("/proc/self/fd indisponível")
+    started = asyncio.Event()
+
+    async def slow():
+        yield b"abc"
+        started.set()
+        await asyncio.sleep(30)
+        yield b"def"
+
+    task = asyncio.create_task(storage.save(slow(), max_bytes=100))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _files(tmp_path / "docs") == []
+    assert _open_fds() == before
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_start_thread_closes_every_fd(
+    storage, tmp_path, monkeypatch
+):
+    before = _open_fds()
+    if before is None:
+        pytest.skip("/proc/self/fd indisponível")
+    in_thread = threading.Event()
+    release = threading.Event()
+    original = LocalDocumentStorage._start
+
+    def slow_start(self, tmp_name, fds):
+        original(self, tmp_name, fds)
+        in_thread.set()
+        release.wait(5)
+
+    monkeypatch.setattr(LocalDocumentStorage, "_start", slow_start)
+    task = asyncio.create_task(storage.save(_chunks(b"abc"), max_bytes=100))
+    while not in_thread.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # espera a thread terminar antes de limpar
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert _files(tmp_path / "docs") == []
+    assert _open_fds() == before
+
+
+def test_list_blobs_skips_symlinked_blobs_and_shards(storage, tmp_path):
+    root = tmp_path / "docs"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "v"
+    victim.write_bytes(b"x")
+    real_key = "ab" + "0" * 30
+    link_key = "ab" + "1" * 30
+    (root / "ab").mkdir(parents=True)
+    (root / "ab" / real_key).write_bytes(b"ok")
+    (root / "ab" / link_key).symlink_to(victim)
+    (outside / ("cd" + "2" * 30)).write_bytes(b"y")
+    (root / "cd").symlink_to(outside, target_is_directory=True)
+
+    assert [key for key, _ in storage.list_blobs()] == [real_key]

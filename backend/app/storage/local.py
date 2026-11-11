@@ -23,7 +23,7 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +52,51 @@ def _write_all(fd: int, data: bytes) -> None:
     while view:
         written = os.write(fd, view)
         view = view[written:]
+
+
+class _Descriptors:
+    """Descritores abertos por save(); cada um é fechado no máximo uma vez."""
+
+    def __init__(self) -> None:
+        self.root: int | None = None
+        self.tmp: int | None = None
+        self.fd: int | None = None
+
+    def close(self, name: str) -> None:
+        descriptor = getattr(self, name)
+        setattr(self, name, None)
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+
+    def close_all(self) -> None:
+        for name in ("fd", "tmp", "root"):
+            self.close(name)
+
+
+async def _run_to_completion[**P, T](
+    func: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    """to_thread que só retorna depois que a thread terminou.
+
+    Cancelar a corrotina não interrompe a thread; sem esperar por ela, o
+    chamador fecharia descritores (cujo número pode ser reutilizado) enquanto
+    a thread ainda escreve neles ou os abre. O cancelamento é repassado ao fim.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            # A thread segue rodando; espera por ela e repassa o cancelamento.
+            cancelled = True
+            if task.done():
+                break
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 def _check_key(key: str) -> str:
@@ -91,13 +136,14 @@ class LocalDocumentStorage:
         """Grava os blocos em temporário e publica sob uma chave nova.
 
         Interrompe com DocumentTooLargeError ao passar de max_bytes. Qualquer
-        falha (inclusive do iterador de origem) remove o temporário.
+        falha (inclusive do iterador de origem ou cancelamento) remove o
+        temporário e fecha cada descritor exatamente uma vez.
         """
         key = secrets.token_hex(16)
         tmp_name = f"{secrets.token_hex(16)}.part"
-        root_fd = tmp_fd = fd = None
+        fds = _Descriptors()
         try:
-            root_fd, tmp_fd, fd = await asyncio.to_thread(self._start, tmp_name)
+            await _run_to_completion(self._start, tmp_name, fds)
             size = 0
             digest = hashlib.sha256()
             async for chunk in chunks:
@@ -106,46 +152,37 @@ class LocalDocumentStorage:
                 size += len(chunk)
                 if size > max_bytes:
                     raise DocumentTooLargeError
-                await asyncio.to_thread(_write_all, fd, chunk)
+                assert fds.fd is not None
+                await _run_to_completion(_write_all, fds.fd, chunk)
                 digest.update(chunk)
-            await asyncio.to_thread(os.fsync, fd)
-            os.close(fd)
-            fd = None
-            await asyncio.to_thread(self._publish, root_fd, tmp_fd, tmp_name, key)
+            assert fds.fd is not None
+            await _run_to_completion(os.fsync, fds.fd)
+            fds.close("fd")
+            assert fds.root is not None and fds.tmp is not None
+            await _run_to_completion(self._publish, fds.root, fds.tmp, tmp_name, key)
         except BaseException:
-            if fd is not None:
+            # Toda thread iniciada já terminou (_run_to_completion), então
+            # nenhum fd é fechado enquanto ainda está em uso.
+            fds.close("fd")
+            if fds.tmp is not None:
                 with suppress(OSError):
-                    os.close(fd)
-                fd = None
-            if tmp_fd is not None:
-                with suppress(OSError):
-                    os.unlink(tmp_name, dir_fd=tmp_fd)
+                    os.unlink(tmp_name, dir_fd=fds.tmp)
             raise
         finally:
-            for descriptor in (fd, tmp_fd, root_fd):
-                if descriptor is not None:
-                    with suppress(OSError):
-                        os.close(descriptor)
+            fds.close_all()
         return StoredFile(key=key, size=size, sha256=digest.hexdigest())
 
-    def _start(self, tmp_name: str) -> tuple[int, int, int]:
-        root_fd = self._open_root(create=True)
-        tmp_fd = fd = None
-        try:
-            tmp_fd = self._open_subdir(root_fd, _TMP_DIR, create=True)
-            fd = os.open(
-                tmp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=tmp_fd,
-            )
-        except BaseException:
-            for descriptor in (fd, tmp_fd, root_fd):
-                if descriptor is not None:
-                    with suppress(OSError):
-                        os.close(descriptor)
-            raise
-        return root_fd, tmp_fd, fd
+    def _start(self, tmp_name: str, fds: _Descriptors) -> None:
+        # Registra cada fd em `fds` assim que abre; quem chamou fecha tudo,
+        # mesmo que a corrotina tenha sido cancelada durante esta thread.
+        fds.root = self._open_root(create=True)
+        fds.tmp = self._open_subdir(fds.root, _TMP_DIR, create=True)
+        fds.fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=fds.tmp,
+        )
 
     def _publish(self, root_fd: int, tmp_fd: int, tmp_name: str, key: str) -> None:
         shard_fd = self._open_subdir(root_fd, key[:2], create=True)
