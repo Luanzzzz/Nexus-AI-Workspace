@@ -17,6 +17,7 @@ INVALID_CREDENTIALS_DETAIL = "Credenciais inválidas."
 INTERNAL_ERROR_DETAIL = "Erro interno do servidor."
 RATE_LIMITED_DETAIL = "Muitas tentativas. Tente novamente mais tarde."
 REGISTER_PROCESSED_DETAIL = "Cadastro processado."
+DUPLICATE_SLUG_DETAIL = "Slug indisponível."
 
 
 def sanitize_validation_errors(errors: Sequence[object]) -> list[dict[str, object]]:
@@ -85,3 +86,15 @@ async def internal_error_exception_handler(
     exc: Exception,
 ) -> JSONResponse:
     return internal_error_response(request, exc)
+
+
+async def duplicate_slug_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    # Mensagem genérica: não ecoa o slug enviado.
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": DUPLICATE_SLUG_DETAIL},
+    )
