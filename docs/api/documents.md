@@ -6,7 +6,7 @@ Upload, listagem, consulta e exclusão. Exige `Authorization: Bearer <access_tok
 
 `multipart/form-data` com um único campo `file` (`UploadFile`). Não há JSON nem base64.
 
-Fluxo: JWT, membership e permissão `document:upload` (só `owner` e `admin`), validação, gravação no storage, criação do `Document` com `status="uploaded"` e `commit`. A autorização roda antes de qualquer escrita no storage. O dono (`uploaded_by`) é o usuário autenticado; `workspace_id` vem da URL.
+Fluxo: JWT, membership e permissão `document:upload` (só `owner` e `admin`), validação, gravação no storage, criação do `Document` com `status="uploaded"` e `commit`. A autorização roda antes de qualquer escrita no storage; a conexão do banco é devolvida ao pool antes do I/O e a permissão é relida na transação de escrita (revogada no meio: 404 sem membership, 403 sem permissão, nada gravado). O dono (`uploaded_by`) é o usuário autenticado; `workspace_id` vem da URL.
 
 ### Regras de validação
 
@@ -37,7 +37,7 @@ A resposta nunca contém a chave do storage nem caminhos. Mensagens de erro são
 
 ### Armazenamento e consistência
 
-O blob fica no diretório configurado por `DOCUMENT_STORAGE_DIR` (fora de pastas públicas e do Git), com nome aleatório gerado no servidor (32 hex), gravado em temporário no mesmo filesystem e publicado com `os.replace`. Postgres e filesystem não compartilham transação: o blob é gravado primeiro; se a persistência falhar, há rollback e o blob é removido. Um crash entre os dois passos pode deixar um blob órfão (reconciliação futura).
+O blob fica no diretório configurado por `DOCUMENT_STORAGE_DIR` (fora de pastas públicas e do Git), com nome aleatório gerado no servidor (32 hex), gravado em temporário no mesmo filesystem e publicado com link sem sobrescrita (colisão de chave sorteia outra; esgotadas 3 tentativas, 500). Postgres e filesystem não compartilham transação: o blob é gravado primeiro. Falha **antes** do commit (inclusive a releitura de permissão): rollback e o blob é removido. Exceção do próprio `commit`: resultado incerto (o Postgres pode ter confirmado e a conexão caído antes do ack); responde 500, **o blob é mantido** e o log traz `stage=commit_uncertain`. Assim, um 500 no upload não garante que o documento não exista. Se o commit de fato falhou, o blob órfão sai na reconciliação. Um crash entre os dois passos também pode deixar um blob órfão.
 
 ### Limite no nível da requisição
 
@@ -68,7 +68,7 @@ Exige a permissão `document:delete` (`owner` e `admin`). Resposta 204 sem corpo
 | 403 | Papel `member` ou `viewer` (nada é alterado) |
 | 404 | Sem membership, documento inexistente ou de outro workspace (nada é alterado) |
 | 422 | Id fora da faixa |
-| 500 | Falha ao confirmar a exclusão no banco (`{"detail": "Erro interno do servidor."}`) |
+| 500 | Falha ao confirmar a exclusão no banco (`{"detail": "Erro interno do servidor."}`); **não garante que a linha ainda exista** (o commit pode ter sido confirmado antes da queda da conexão) |
 
 Os status das consultas são os mesmos (200, 401, 404, 422, 500); 403 não se aplica a leitura.
 
@@ -76,7 +76,7 @@ Os status das consultas são os mesmos (200, 401, 404, 422, 500); 403 não se ap
 
 Postgres e filesystem não compartilham transação. Ordem: carregar o documento no workspace, remover a linha, `commit`, e só então remover o blob.
 
-- Falha no `commit`: rollback, blob intacto, 500 genérico.
+- Falha no `commit`: rollback, blob intacto, 500 genérico. O resultado do commit é incerto: a linha pode ter sido removida mesmo com 500 (um GET posterior mostra o estado real); o blob mantido sai na reconciliação se for o caso.
 - Blob já ausente: 204 e um warning no log (sem chave, caminho ou nome).
 - Falha ao remover o blob depois do `commit`: responde **204** (a exclusão lógica, que o cliente pediu, aconteceu e não pode ser desfeita) e registra `error stage=blob_cleanup` com `request_id` e só o tipo da exceção. O blob fica órfão no disco até a reconciliação.
 
