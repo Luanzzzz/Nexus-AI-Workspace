@@ -21,11 +21,14 @@ from app.services.workspace import WorkspaceService
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
+_UNAUTHORIZED = {"description": "Não autenticado."}
+
 
 @router.post(
     "",
     response_model=WorkspaceResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={401: _UNAUTHORIZED, 409: {"description": "Slug indisponível."}},
 )
 async def create_workspace(
     payload: WorkspaceCreate,
@@ -37,7 +40,11 @@ async def create_workspace(
     return WorkspaceResponse.model_validate(workspace)
 
 
-@router.get("", response_model=list[WorkspaceResponse])
+@router.get(
+    "",
+    response_model=list[WorkspaceResponse],
+    responses={401: _UNAUTHORIZED},
+)
 async def list_workspaces(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
@@ -46,7 +53,11 @@ async def list_workspaces(
     return [WorkspaceResponse.model_validate(item) for item in workspaces]
 
 
-@router.get("/{workspace_id}", response_model=WorkspaceResponse)
+@router.get(
+    "/{workspace_id}",
+    response_model=WorkspaceResponse,
+    responses={401: _UNAUTHORIZED, 404: {"description": "Workspace não encontrado."}},
+)
 async def read_workspace(
     membership: Annotated[WorkspaceMember, Depends(require_permission(READ))],
     session: Annotated[AsyncSession, Depends(get_db)],

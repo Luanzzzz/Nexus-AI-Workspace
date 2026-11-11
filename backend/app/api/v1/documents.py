@@ -98,6 +98,10 @@ class _BoundedUploadRoute(APIRoute):
         return handler
 
 
+_UNAUTHORIZED = {"description": "Não autenticado."}
+_FORBIDDEN = {"description": "Permissão insuficiente."}
+_NOT_FOUND = {"description": "Workspace ou documento não encontrado."}
+
 # Os ids são INTEGER no PostgreSQL: fora da faixa vira 422, não erro de banco.
 DocumentId = Annotated[int, Path(ge=1, le=2147483647)]
 DOCUMENT_NOT_FOUND_DETAIL = "Documento não encontrado."
@@ -122,6 +126,9 @@ router = APIRouter(
     response_model=DocumentResponse,
     status_code=status.HTTP_201_CREATED,
     responses={
+        401: _UNAUTHORIZED,
+        403: _FORBIDDEN,
+        404: _NOT_FOUND,
         413: {"description": "Arquivo acima de 10 MiB."},
         415: {"description": "Tipo de arquivo não suportado."},
         422: {"description": "Arquivo vazio, inválido ou nome inválido."},
@@ -142,7 +149,11 @@ async def upload_document(
     return DocumentResponse.model_validate(document)
 
 
-@router.get("", response_model=DocumentListResponse)
+@router.get(
+    "",
+    response_model=DocumentListResponse,
+    responses={401: _UNAUTHORIZED, 404: _NOT_FOUND},
+)
 async def list_documents(
     membership: Annotated[WorkspaceMember, Depends(require_permission(READ))],
     service: Annotated[DocumentService, Depends(get_document_service)],
@@ -163,7 +174,7 @@ async def list_documents(
 @router.get(
     "/{document_id}",
     response_model=DocumentResponse,
-    responses={404: {"description": "Workspace ou documento não encontrado."}},
+    responses={401: _UNAUTHORIZED, 404: _NOT_FOUND},
 )
 async def get_document(
     document_id: DocumentId,
@@ -182,10 +193,7 @@ async def get_document(
     "/{document_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses={
-        403: {"description": "Permissão insuficiente."},
-        404: {"description": "Workspace ou documento não encontrado."},
-    },
+    responses={401: _UNAUTHORIZED, 403: _FORBIDDEN, 404: _NOT_FOUND},
 )
 async def delete_document(
     document_id: DocumentId,

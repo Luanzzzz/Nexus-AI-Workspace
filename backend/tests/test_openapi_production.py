@@ -45,3 +45,24 @@ def test_debug_true_does_not_put_traceback_on_client(monkeypatch):
     assert response.headers["content-type"].startswith("application/json")
     assert "traceback-secreto-nao-pode-sair" not in response.text
     assert "RuntimeError" not in response.text
+
+
+def test_workspace_and_document_routes_document_error_responses():
+    from app.main import app
+
+    paths = app.openapi()["paths"]
+    base = "/api/v1/workspaces"
+    detail = base + "/{workspace_id}"
+    docs = detail + "/documents"
+    item = docs + "/{document_id}"
+    expected = {
+        (base, "post"): {"401", "409", "422"},
+        (base, "get"): {"401"},
+        (detail, "get"): {"401", "404", "422"},
+        (docs, "post"): {"401", "403", "404", "413", "415", "422"},
+        (docs, "get"): {"401", "404", "422"},
+        (item, "get"): {"401", "404", "422"},
+        (item, "delete"): {"401", "403", "404", "422"},
+    }
+    for (path, method), codes in expected.items():
+        assert codes <= set(paths[path][method]["responses"]), (path, method)
