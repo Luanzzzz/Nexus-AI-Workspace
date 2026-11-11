@@ -2,18 +2,25 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
 from app.api.exception_handlers import (
+    document_too_large_exception_handler,
     duplicate_slug_exception_handler,
     internal_error_exception_handler,
     invalid_credentials_exception_handler,
+    invalid_document_exception_handler,
     request_validation_exception_handler,
+    unsupported_document_exception_handler,
 )
 from app.api.middleware import RequestContextMiddleware
 from app.api.v1.router import router as api_v1_router
 from app.core.config import settings
 from app.core.exceptions import (
     CredentialVerificationError,
+    DocumentTooLargeError,
+    DocumentUploadError,
     DuplicateSlugError,
     InvalidCredentialsError,
+    InvalidDocumentError,
+    UnsupportedDocumentTypeError,
 )
 from app.core.logging import configure_logging
 
@@ -46,6 +53,22 @@ def create_app() -> FastAPI:
     application.add_exception_handler(
         DuplicateSlugError,
         duplicate_slug_exception_handler,
+    )
+    application.add_exception_handler(
+        UnsupportedDocumentTypeError,
+        unsupported_document_exception_handler,
+    )
+    application.add_exception_handler(
+        InvalidDocumentError,
+        invalid_document_exception_handler,
+    )
+    application.add_exception_handler(
+        DocumentTooLargeError,
+        document_too_large_exception_handler,
+    )
+    application.add_exception_handler(
+        DocumentUploadError,
+        internal_error_exception_handler,
     )
     application.add_middleware(RequestContextMiddleware)
     return application

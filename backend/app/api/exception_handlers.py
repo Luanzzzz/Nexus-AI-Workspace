@@ -98,3 +98,45 @@ async def duplicate_slug_exception_handler(
         status_code=status.HTTP_409_CONFLICT,
         content={"detail": DUPLICATE_SLUG_DETAIL},
     )
+
+
+UNSUPPORTED_DOCUMENT_DETAIL = "Tipo de arquivo não suportado."
+INVALID_DOCUMENT_DETAIL = "Arquivo inválido."
+DOCUMENT_TOO_LARGE_DETAIL = "Arquivo excede o tamanho máximo de 10 MiB."
+
+
+async def unsupported_document_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        content={"detail": UNSUPPORTED_DOCUMENT_DETAIL},
+    )
+
+
+async def invalid_document_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": INVALID_DOCUMENT_DETAIL},
+    )
+
+
+def document_too_large_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        content={"detail": DOCUMENT_TOO_LARGE_DETAIL},
+    )
+
+
+async def document_too_large_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return document_too_large_response()
