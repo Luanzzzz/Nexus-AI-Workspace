@@ -247,3 +247,44 @@ def test_list_blobs_skips_symlinked_blobs_and_shards(storage, tmp_path):
     (root / "cd").symlink_to(outside, target_is_directory=True)
 
     assert [key for key, _ in storage.list_blobs()] == [real_key]
+
+
+def _fixed_keys(monkeypatch, keys):
+    it = iter(keys)
+    last = keys[-1]
+    monkeypatch.setattr(local, "_new_key", lambda: next(it, last))
+
+
+@pytest.mark.asyncio
+async def test_key_collision_does_not_overwrite_and_retries(
+    storage, tmp_path, monkeypatch
+):
+    first_key = "ab" + "0" * 30
+    _fixed_keys(monkeypatch, [first_key, first_key, "cd" + "1" * 30])
+
+    first = await storage.save(_chunks(b"primeiro"), max_bytes=100)
+    second = await storage.save(_chunks(b"segundo"), max_bytes=100)
+
+    assert first.key == first_key
+    assert second.key == "cd" + "1" * 30
+    with storage.open(first.key) as fh:
+        assert fh.read() == b"primeiro"
+    with storage.open(second.key) as fh:
+        assert fh.read() == b"segundo"
+    assert not list((tmp_path / "docs" / ".tmp").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_persistent_key_collision_raises_and_keeps_first_blob(
+    storage, tmp_path, monkeypatch
+):
+    key = "ab" + "0" * 30
+    _fixed_keys(monkeypatch, [key])
+
+    first = await storage.save(_chunks(b"primeiro"), max_bytes=100)
+    with pytest.raises(StorageError):
+        await storage.save(_chunks(b"segundo"), max_bytes=100)
+
+    with storage.open(first.key) as fh:
+        assert fh.read() == b"primeiro"
+    assert [p.name for p in _files(tmp_path / "docs")] == [key]

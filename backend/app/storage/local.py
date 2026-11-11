@@ -1,7 +1,9 @@
 """Storage local de documentos em filesystem.
 
 Layout: <root>/<2 primeiros hex da chave>/<chave> e <root>/.tmp/ para
-gravações em andamento (mesmo filesystem, então os.replace é atômico).
+gravações em andamento (mesmo filesystem, então o link é atômico). A
+publicação usa link + unlink do temporário (nunca os.replace): se a chave já
+existir, o link falha e uma nova chave é sorteada, sem sobrescrever blob.
 A chave tem 32 hex minúsculos gerados no servidor; nunca deriva do filename.
 
 I/O: o filesystem é síncrono; cada bloco de 64 KiB e cada passo de
@@ -35,6 +37,9 @@ _KEY_RE = re.compile(r"[0-9a-f]{32}")
 _TMP_DIR = ".tmp"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
+
+# Tentativas de publicar sob uma chave inédita antes de desistir.
+_PUBLISH_ATTEMPTS = 3
 
 _TMP_RE = re.compile(r"[0-9a-f]{32}\.part")
 _SHARD_RE = re.compile(r"[0-9a-f]{2}")
@@ -99,6 +104,10 @@ async def _run_to_completion[**P, T](
     return result
 
 
+def _new_key() -> str:
+    return secrets.token_hex(16)
+
+
 def _check_key(key: str) -> str:
     if not isinstance(key, str) or _KEY_RE.fullmatch(key) is None:
         raise StorageError("Chave de storage inválida.")
@@ -139,7 +148,7 @@ class LocalDocumentStorage:
         falha (inclusive do iterador de origem ou cancelamento) remove o
         temporário e fecha cada descritor exatamente uma vez.
         """
-        key = secrets.token_hex(16)
+        key = _new_key()
         tmp_name = f"{secrets.token_hex(16)}.part"
         fds = _Descriptors()
         try:
@@ -159,7 +168,9 @@ class LocalDocumentStorage:
             await _run_to_completion(os.fsync, fds.fd)
             fds.close("fd")
             assert fds.root is not None and fds.tmp is not None
-            await _run_to_completion(self._publish, fds.root, fds.tmp, tmp_name, key)
+            key = await _run_to_completion(
+                self._publish, fds.root, fds.tmp, tmp_name, key
+            )
         except BaseException:
             # Toda thread iniciada já terminou (_run_to_completion), então
             # nenhum fd é fechado enquanto ainda está em uso.
@@ -184,13 +195,42 @@ class LocalDocumentStorage:
             dir_fd=fds.tmp,
         )
 
-    def _publish(self, root_fd: int, tmp_fd: int, tmp_name: str, key: str) -> None:
-        shard_fd = self._open_subdir(root_fd, key[:2], create=True)
-        try:
-            os.replace(tmp_name, key, src_dir_fd=tmp_fd, dst_dir_fd=shard_fd)
-            os.fsync(shard_fd)
-        finally:
-            os.close(shard_fd)
+    def _publish(self, root_fd: int, tmp_fd: int, tmp_name: str, key: str) -> str:
+        """Publica o temporário sem sobrescrever; devolve a chave efetiva.
+
+        os.link falha com FileExistsError se o destino existe (colisão de
+        chave): sorteia outra e tenta de novo, até _PUBLISH_ATTEMPTS vezes.
+        """
+        for _ in range(_PUBLISH_ATTEMPTS):
+            shard_fd = self._open_subdir(root_fd, key[:2], create=True)
+            try:
+                try:
+                    os.link(
+                        tmp_name,
+                        key,
+                        src_dir_fd=tmp_fd,
+                        dst_dir_fd=shard_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    key = _new_key()
+                    continue
+                try:
+                    os.fsync(shard_fd)
+                except BaseException:
+                    # O link é nosso (não existia antes): desfaz para não
+                    # deixar blob publicado numa operação que falhou.
+                    with suppress(OSError):
+                        os.unlink(key, dir_fd=shard_fd)
+                    raise
+                with suppress(OSError):
+                    # O blob já está publicado; um .part sobrando (mesmo inode)
+                    # é removido por save() ou pela reconciliação.
+                    os.unlink(tmp_name, dir_fd=tmp_fd)
+                return key
+            finally:
+                os.close(shard_fd)
+        raise StorageError("Não foi possível publicar o blob sob uma chave inédita.")
 
     # --- open / delete --------------------------------------------------
 
