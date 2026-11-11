@@ -114,10 +114,17 @@ class DocumentService:
         try:
             await self.session.commit()
         except BaseException as exc:
-            await self._compensate(stored.key)
+            # Resultado INCERTO: o Postgres pode ter confirmado e a conexão cair
+            # antes do ack. Apagar o blob poderia deixar uma linha sem arquivo,
+            # então ele é mantido; se o commit realmente falhou, a reconciliação
+            # remove o órfão (grace de 1 h, nunca remove blob com linha).
+            try:
+                await asyncio.shield(self.session.rollback())
+            except Exception as rollback_exc:
+                self._log_failure("rollback", rollback_exc)
             if not isinstance(exc, Exception):
                 raise
-            self._log_failure("database", exc)
+            self._log_failure("commit_uncertain", exc)
             raise DocumentUploadError from None
         return document
 

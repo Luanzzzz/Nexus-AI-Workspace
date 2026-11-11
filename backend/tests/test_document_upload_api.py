@@ -4,6 +4,7 @@ Cada teste roda numa transação externa revertida no fim (nexus_ai_test) e com
 storage em tmp_path: nada fica no banco nem no diretório real.
 """
 
+import time
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.database import get_db
@@ -28,6 +30,7 @@ from app.repositories.user import UserRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.repositories.workspace_member import WorkspaceMemberRepository
 from app.services.document import DocumentService
+from app.services.document_reconciliation import find_orphan_blobs, reconcile_orphans
 from app.services.document_validation import MAX_UPLOAD_BYTES
 from app.storage.local import LocalDocumentStorage
 
@@ -410,21 +413,92 @@ async def test_db_failure_returns_500_and_removes_blob(
     assert await _count(session) == before
 
 
+def _fail_second_commit(session, monkeypatch, *, really_commit: bool):
+    """A 1ª chamada (fim da transação de leitura) passa; a 2ª (commit da linha)
+    falha, antes ou depois de confirmar de verdade."""
+    real_commit = session.commit
+    calls = 0
+
+    async def commit():
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            await real_commit()
+            return
+        if really_commit:
+            await real_commit()
+        raise OperationalError("COMMIT", None, Exception("conexao caiu"))
+
+    monkeypatch.setattr(session, "commit", commit)
+    return real_commit
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_commit_failure_returns_500_and_removes_blob(
+async def test_commit_succeeded_then_connection_error_keeps_blob_and_row(
+    client, session, storage_root, monkeypatch, caplog
+):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    real_commit = _fail_second_commit(session, monkeypatch, really_commit=True)
+    with caplog.at_level("ERROR"):
+        response = await _upload(
+            client, owner, workspace.id, "segredo.txt", b"conteudo"
+        )
+    monkeypatch.setattr(session, "commit", real_commit)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Erro interno do servidor."}
+    blobs = _blobs(storage_root)
+    assert len(blobs) == 1
+    assert blobs[0].read_bytes() == b"conteudo"
+    assert await _count(session) == 1
+    key = await session.scalar(select(Document.storage_key))
+    assert blobs[0].name == key
+    assert "stage=commit_uncertain" in caplog.text
+    assert "OperationalError" in caplog.text
+    assert key not in caplog.text
+    assert "segredo" not in caplog.text
+    assert str(storage_root) not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_commit_failure_without_commit_keeps_blob_for_reconciliation(
     client, session, storage_root, monkeypatch
 ):
     owner = await _user(session)
     workspace = await _workspace(session, owner)
-    real_commit = session.commit
-
-    async def failing_commit():
-        raise RuntimeError("commit falhou")
-
-    monkeypatch.setattr(session, "commit", failing_commit)
+    real_commit = _fail_second_commit(session, monkeypatch, really_commit=False)
     response = await _upload(client, owner, workspace.id, "a.txt", b"conteudo")
     monkeypatch.setattr(session, "commit", real_commit)
+
+    assert response.status_code == 500
+    assert await _count(session) == 0
+    blobs = _blobs(storage_root)
+    assert len(blobs) == 1  # incerto: o blob não é apagado
+
+    storage = LocalDocumentStorage(storage_root)
+    future = time.time() + 7200
+    assert await find_orphan_blobs(session, storage, now=future) == [blobs[0].name]
+    report = await reconcile_orphans(session, storage, dry_run=False, now=future)
+    assert report.removed_blobs == 1
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_failure_before_commit_removes_blob(
+    client, session, storage_root, monkeypatch
+):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+
+    async def failing_create(self, **kwargs):
+        raise RuntimeError("flush falhou")
+
+    monkeypatch.setattr(DocumentRepository, "create", failing_create)
+    response = await _upload(client, owner, workspace.id, "a.txt", b"conteudo")
 
     assert response.status_code == 500
     assert _blobs(storage_root) == []
