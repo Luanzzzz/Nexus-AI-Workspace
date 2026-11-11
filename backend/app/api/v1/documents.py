@@ -16,6 +16,7 @@ from fastapi import (
     status,
 )
 from fastapi.routing import APIRoute
+from starlette.types import Message
 
 from app.api.dependencies.auth import get_current_user
 from app.api.dependencies.documents import get_document_service
@@ -41,25 +42,58 @@ from app.services.document_validation import MAX_UPLOAD_BYTES
 _MULTIPART_OVERHEAD = 64 * 1024
 
 
-class _BoundedUploadRoute(APIRoute):
-    """Recusa cedo (413) corpos com Content-Length claramente acima do limite.
+class _BodyTooLargeError(Exception):
+    """Corpo acumulado acima do teto; interrompe a leitura do multipart."""
 
-    O Starlette grava o multipart em arquivo temporário antes da rota rodar;
-    este guarda evita isso quando o cliente declara o tamanho. Corpos sem
-    Content-Length (chunked) passam e o limite exato vale no storage.
+
+class _BoundedUploadRoute(APIRoute):
+    """Limita o corpo da requisição ao teto do upload (413), com ou sem tamanho.
+
+    O Starlette grava o multipart em arquivo temporário (acima de 1 MiB) antes
+    das dependencies de autenticação rodarem. Este guarda:
+    - recusa de imediato Content-Length declarado acima do teto;
+    - envolve `receive` e, ao passar de MAX_UPLOAD_BYTES + folga, aborta a
+      leitura (inclusive chunked, sem Content-Length) e responde 413.
+    O spool anterior à autenticação continua existindo, mas fica limitado a
+    ~10 MiB + folga por requisição (ver ADR 0009). O limite exato do arquivo
+    vale no storage.
     """
 
     def get_route_handler(
         self,
     ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         original = super().get_route_handler()
+        limit = MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD
 
         async def handler(request: Request) -> Response:
             declared = request.headers.get("content-length", "")
-            if declared.isascii() and declared.isdigit():
-                if int(declared) > MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD:
+            if declared.isascii() and declared.isdigit() and int(declared) > limit:
+                return document_too_large_response()
+
+            receive = request.receive
+            received = 0
+            exceeded = False
+
+            async def bounded_receive() -> Message:
+                nonlocal received, exceeded
+                message = await receive()
+                if message["type"] == "http.request":
+                    received += len(message.get("body", b""))
+                    if received > limit:
+                        exceeded = True
+                        raise _BodyTooLargeError
+                return message
+
+            # Starlette não expõe API pública para trocar o receive de um Request.
+            request._receive = bounded_receive
+            try:
+                return await original(request)
+            except Exception:
+                # O FastAPI converte falhas de parsing em HTTPException(400);
+                # a flag identifica o estouro de teto de forma inequívoca.
+                if exceeded:
                     return document_too_large_response()
-            return await original(request)
+                raise
 
         return handler
 

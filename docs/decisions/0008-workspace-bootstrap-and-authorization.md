@@ -25,7 +25,7 @@ A Fase 3 introduz workspaces como fronteira multi-tenant. Era preciso decidir co
   | `document:delete` | sim | sim | não | não |
 
   A matriz está em `app/api/dependencies/workspace.py` (`PERMISSIONS`). Permissão desconhecida nega por padrão. Os papéis vêm do ADR 0002.
-- **404 versus 403.** Usuário sem membership e workspace inexistente recebem o **mesmo** 404 (`"Workspace não encontrado."`), para não revelar a existência de workspaces alheios. Quem é membro mas não tem a permissão recebe 403 (`"Permissão insuficiente."`). Documento inexistente e documento de outro workspace também recebem o mesmo 404. A autorização roda como dependency, antes de qualquer escrita ou leitura de corpo da rota.
+- **404 versus 403.** Usuário sem membership e workspace inexistente recebem o **mesmo** 404 (`"Workspace não encontrado."`), para não revelar a existência de workspaces alheios. Quem é membro mas não tem a permissão recebe 403 (`"Permissão insuficiente."`). Documento inexistente e documento de outro workspace também recebem o mesmo 404. A autorização roda como dependency, antes de qualquer escrita no storage ou no banco; o corpo multipart, porém, é lido (e, acima de 1 MiB, gravado em arquivo temporário pelo Starlette) **antes** da autenticação, limitado a 10 MiB mais folga na rota de upload (ver ADR 0009).
 - **Limites dos ids de path.** `workspace_id` e `document_id` aceitam 1 a 2147483647 (INTEGER do PostgreSQL); fora da faixa vira 422, não erro de banco.
 
 ## Trade-offs

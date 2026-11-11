@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.database import get_db
 from app.api.dependencies.documents import get_document_storage
+from app.api.exception_handlers import DOCUMENT_TOO_LARGE_DETAIL
+from app.api.v1.documents import _MULTIPART_OVERHEAD
 from app.core.tokens import create_access_token
 from app.db.session import engine
 from app.main import app
@@ -25,6 +27,7 @@ from app.repositories.document import DocumentRepository
 from app.repositories.user import UserRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.repositories.workspace_member import WorkspaceMemberRepository
+from app.services.document import DocumentService
 from app.services.document_validation import MAX_UPLOAD_BYTES
 from app.storage.local import LocalDocumentStorage
 
@@ -274,6 +277,73 @@ async def test_declared_content_length_far_over_limit_is_rejected_early(
     )
 
     assert response.status_code == 413
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_declared_content_length_over_limit_never_reads_body(
+    client, session, storage_root, monkeypatch
+):
+    """Sem o guarda de Content-Length o corpo seria lido: aqui ele não é tocado."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    calls: list[str] = []
+
+    async def spy_upload(self, **kwargs):
+        calls.append("upload")
+        raise AssertionError("handler não deveria rodar")
+
+    monkeypatch.setattr(DocumentService, "upload_document", spy_upload)
+    pulled = 0
+
+    async def body():
+        nonlocal pulled
+        pulled += 1
+        yield b"x"
+
+    headers = {
+        **_auth(owner),
+        "Content-Type": "multipart/form-data; boundary=b",
+        "Content-Length": str(MAX_UPLOAD_BYTES + 10 * 1024 * 1024),
+    }
+    response = await client.post(_url(workspace.id), content=body(), headers=headers)
+
+    assert response.status_code == 413
+    assert pulled == 0
+    assert calls == []
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_chunked_body_far_over_limit_is_aborted_with_413(client, storage_root):
+    """Sem Content-Length e sem autenticação: leitura limitada ao teto + folga."""
+    chunk = b"a" * 65536
+    yielded = 0
+    total = 200 * 1024 * 1024
+
+    preamble = (
+        b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+        b"Content-Type: text/plain\r\n\r\n"
+    )
+
+    async def body():
+        nonlocal yielded
+        yield preamble
+        while yielded * len(chunk) < total:
+            yielded += 1
+            yield chunk
+
+    response = await client.post(
+        "/api/v1/workspaces/1/documents",
+        content=body(),
+        headers={"Content-Type": "multipart/form-data; boundary=b"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": DOCUMENT_TOO_LARGE_DETAIL}
+    assert yielded * len(chunk) <= MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD + len(chunk)
     assert _blobs(storage_root) == []
 
 
