@@ -49,6 +49,13 @@ class DocumentUploadError(Exception):
         super().__init__("Falha interna ao gravar o documento.")
 
 
+class DocumentDeleteError(Exception):
+    # Falha interna ao excluir o documento (banco). Mensagem fixa; o handler
+    # responde 500 genérico. Falha de blob após o commit NÃO usa esta exceção.
+    def __init__(self) -> None:
+        super().__init__("Falha interna ao excluir o documento.")
+
+
 class StorageError(Exception):
     # Chave inválida ou caminho inseguro no storage local. Sem caminho na mensagem.
     pass

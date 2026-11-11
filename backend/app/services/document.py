@@ -15,7 +15,11 @@ import logging
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import DocumentUploadError, StorageError
+from app.core.exceptions import (
+    DocumentDeleteError,
+    DocumentUploadError,
+    StorageError,
+)
 from app.core.logging import request_id_ctx
 from app.models.document import Document
 from app.models.user import User
@@ -70,6 +74,57 @@ class DocumentService:
             raise DocumentUploadError from None
         return document
 
+    async def list_documents(
+        self, *, workspace_id: int, limit: int, offset: int
+    ) -> tuple[list[Document], int]:
+        items = await self.documents.list_by_workspace(workspace_id, limit, offset)
+        total = await self.documents.count_by_workspace(workspace_id)
+        return items, total
+
+    async def get_document(
+        self, *, workspace_id: int, document_id: int
+    ) -> Document | None:
+        return await self.documents.get_in_workspace(workspace_id, document_id)
+
+    async def delete_document(self, *, workspace_id: int, document_id: int) -> bool:
+        """Exclui linha (commit) e depois o blob. False se o documento não existe.
+
+        NÃO é atômico entre Postgres e filesystem. A linha é a fonte da verdade:
+        - commit falhou: rollback, blob intacto, DocumentDeleteError (500);
+        - blob já ausente: sucesso, warning;
+        - remoção do blob falhou após o commit: sucesso (a exclusão lógica
+          ocorreu), error stage=blob_cleanup; o órfão sai na reconciliação.
+        """
+        document = await self.documents.get_in_workspace(workspace_id, document_id)
+        if document is None:
+            return False
+        key = document.storage_key
+        try:
+            await self.documents.delete(document)
+            await self.session.commit()
+        except BaseException as exc:
+            try:
+                await asyncio.shield(self.session.rollback())
+            except Exception as rollback_exc:
+                self._log_delete_failure("rollback", rollback_exc)
+            if not isinstance(exc, Exception):
+                raise
+            self._log_delete_failure("database", exc)
+            raise DocumentDeleteError from None
+
+        try:
+            existed = await asyncio.to_thread(self.storage.delete, key)
+        except Exception as exc:
+            # Blob órfão: fica para reconciliação (ver document_reconciliation).
+            self._log_delete_failure("blob_cleanup", exc)
+        else:
+            if not existed:
+                logger.warning(
+                    "Blob de documento já ausente na exclusão request_id=%s",
+                    request_id_ctx.get("-"),
+                )
+        return True
+
     async def _compensate(self, key: str) -> None:
         try:
             await asyncio.shield(self.session.rollback())
@@ -85,6 +140,15 @@ class DocumentService:
     def _log_failure(stage: str, exc: BaseException) -> None:
         logger.error(
             "Falha no upload de documento stage=%s request_id=%s type=%s",
+            stage,
+            request_id_ctx.get("-"),
+            type(exc).__name__,
+        )
+
+    @staticmethod
+    def _log_delete_failure(stage: str, exc: BaseException) -> None:
+        logger.error(
+            "Falha na exclusão de documento stage=%s request_id=%s type=%s",
             stage,
             request_id_ctx.get("-"),
             type(exc).__name__,

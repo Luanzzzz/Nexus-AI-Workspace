@@ -36,6 +36,10 @@ _TMP_DIR = ".tmp"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
+_TMP_RE = re.compile(r"[0-9a-f]{32}\.part")
+_SHARD_RE = re.compile(r"[0-9a-f]{2}")
+
+
 @dataclass(frozen=True)
 class StoredFile:
     key: str
@@ -207,5 +211,103 @@ class LocalDocumentStorage:
                 return True
             finally:
                 os.close(shard_fd)
+        finally:
+            os.close(root_fd)
+
+    # --- varredura (reconciliação) --------------------------------------
+
+    def list_blobs(self) -> list[tuple[str, float]]:
+        """Lista (chave, mtime) dos blobs publicados.
+
+        Só entram arquivos regulares com nome de chave válida dentro do shard
+        correto; symlinks, diretórios e nomes fora do formato são ignorados.
+        Nunca sai do root (descritores de diretório + O_NOFOLLOW).
+        """
+        found: list[tuple[str, float]] = []
+        try:
+            root_fd = self._open_root(create=False)
+        except FileNotFoundError:
+            return found
+        try:
+            with os.scandir(root_fd) as shards:
+                shard_names = [
+                    e.name
+                    for e in shards
+                    if _SHARD_RE.fullmatch(e.name) and e.is_dir(follow_symlinks=False)
+                ]
+            for shard in shard_names:
+                try:
+                    shard_fd = self._open_subdir(root_fd, shard, create=False)
+                except (FileNotFoundError, StorageError):
+                    continue
+                try:
+                    with os.scandir(shard_fd) as entries:
+                        for entry in entries:
+                            if (
+                                _KEY_RE.fullmatch(entry.name)
+                                and entry.name.startswith(shard)
+                                and entry.is_file(follow_symlinks=False)
+                            ):
+                                mtime = entry.stat(follow_symlinks=False).st_mtime
+                                found.append((entry.name, mtime))
+                finally:
+                    os.close(shard_fd)
+        finally:
+            os.close(root_fd)
+        return found
+
+    def list_tmp(self) -> list[tuple[str, float]]:
+        """Lista (nome, mtime) dos temporários `<32 hex>.part` em .tmp/."""
+        found: list[tuple[str, float]] = []
+        try:
+            root_fd = self._open_root(create=False)
+        except FileNotFoundError:
+            return found
+        try:
+            try:
+                tmp_fd = self._open_subdir(root_fd, _TMP_DIR, create=False)
+            except (FileNotFoundError, StorageError):
+                return found
+            try:
+                with os.scandir(tmp_fd) as entries:
+                    for entry in entries:
+                        if _TMP_RE.fullmatch(entry.name) and entry.is_file(
+                            follow_symlinks=False
+                        ):
+                            mtime = entry.stat(follow_symlinks=False).st_mtime
+                            found.append((entry.name, mtime))
+            finally:
+                os.close(tmp_fd)
+        finally:
+            os.close(root_fd)
+        return found
+
+    def delete_tmp(self, name: str) -> bool:
+        """Remove um temporário `.part` regular. False se já não existia."""
+        if not isinstance(name, str) or _TMP_RE.fullmatch(name) is None:
+            raise StorageError("Nome de temporário inválido.")
+        try:
+            root_fd = self._open_root(create=False)
+        except FileNotFoundError:
+            return False
+        try:
+            try:
+                tmp_fd = self._open_subdir(root_fd, _TMP_DIR, create=False)
+            except FileNotFoundError:
+                return False
+            try:
+                try:
+                    mode = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    return False
+                if not stat.S_ISREG(mode):
+                    raise StorageError("Caminho de storage inseguro.")
+                try:
+                    os.unlink(name, dir_fd=tmp_fd)
+                except FileNotFoundError:
+                    return False
+                return True
+            finally:
+                os.close(tmp_fd)
         finally:
             os.close(root_fd)

@@ -15,6 +15,7 @@ from app.api.v1.router import router as api_v1_router
 from app.core.config import settings
 from app.core.exceptions import (
     CredentialVerificationError,
+    DocumentDeleteError,
     DocumentTooLargeError,
     DocumentUploadError,
     DuplicateSlugError,
@@ -65,6 +66,10 @@ def create_app() -> FastAPI:
     application.add_exception_handler(
         DocumentTooLargeError,
         document_too_large_exception_handler,
+    )
+    application.add_exception_handler(
+        DocumentDeleteError,
+        internal_error_exception_handler,
     )
     application.add_exception_handler(
         DocumentUploadError,
