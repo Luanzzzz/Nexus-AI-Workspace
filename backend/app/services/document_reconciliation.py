@@ -32,7 +32,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_AGE_SECONDS = 3600
 DEFAULT_TMP_MAX_AGE_SECONDS = 3600
+# Piso de idade: abaixo disso um upload em andamento (blob publicado, linha
+# ainda não confirmada) poderia ser tomado por órfão e removido.
+MIN_AGE_FLOOR_SECONDS = 60
 _BATCH = 500
+
+
+def _check_age(value: float, name: str) -> None:
+    # `not >=` também rejeita NaN.
+    if not value >= MIN_AGE_FLOOR_SECONDS:
+        raise ValueError(f"{name} deve ser >= {MIN_AGE_FLOOR_SECONDS} segundos.")
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,7 @@ async def find_orphan_blobs(
     now: float | None = None,
 ) -> list[str]:
     """Chaves de blobs antigos o bastante e sem linha em `documents`."""
+    _check_age(min_age_seconds, "min_age_seconds")
     cutoff = (time.time() if now is None else now) - min_age_seconds
     candidates = [
         key
@@ -76,6 +86,7 @@ async def find_stale_tmp(
     max_age_seconds: float = DEFAULT_TMP_MAX_AGE_SECONDS,
     now: float | None = None,
 ) -> list[str]:
+    _check_age(max_age_seconds, "max_age_seconds")
     cutoff = (time.time() if now is None else now) - max_age_seconds
     return sorted(
         name
@@ -93,6 +104,8 @@ async def reconcile_orphans(
     tmp_max_age_seconds: float = DEFAULT_TMP_MAX_AGE_SECONDS,
     now: float | None = None,
 ) -> ReconciliationReport:
+    _check_age(min_age_seconds, "min_age_seconds")
+    _check_age(tmp_max_age_seconds, "tmp_max_age_seconds")
     orphans = await find_orphan_blobs(
         session, storage, min_age_seconds=min_age_seconds, now=now
     )

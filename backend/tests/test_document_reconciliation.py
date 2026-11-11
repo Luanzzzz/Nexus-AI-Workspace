@@ -14,6 +14,7 @@ from app.repositories.user import UserRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.services.document_reconciliation import (
     find_orphan_blobs,
+    find_stale_tmp,
     reconcile_orphans,
 )
 from app.storage.local import LocalDocumentStorage
@@ -209,3 +210,23 @@ def test_delete_tmp_rejects_invalid_names(storage):
     for name in ("../x.part", "x.part", "a" * 32, ""):
         with pytest.raises(StorageError):
             storage.delete_tmp(name)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age", [0, -5, 59.9, float("nan")])
+async def test_age_below_floor_is_rejected_before_touching_anything(tmp_path, age):
+    storage = LocalDocumentStorage(tmp_path / "docs")
+
+    with pytest.raises(ValueError):
+        await find_orphan_blobs(None, storage, min_age_seconds=age)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        await find_stale_tmp(storage, max_age_seconds=age)
+    with pytest.raises(ValueError):
+        await reconcile_orphans(None, storage, dry_run=False, min_age_seconds=age)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        await reconcile_orphans(
+            None,
+            storage,
+            dry_run=False,
+            tmp_max_age_seconds=age,  # type: ignore[arg-type]
+        )
