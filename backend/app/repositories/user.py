@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -16,9 +16,13 @@ class UserRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def lock_for_update(self, user_id: int) -> None:
+    async def lock_for_update(self, user_id: int, *, lock_timeout_ms: int) -> None:
         # Serializa operações por usuário (ex.: limite de workspaces) até o
-        # commit/rollback do chamador.
+        # commit/rollback do chamador. O lock_timeout é local à transação e evita
+        # prender a conexão se outra transação segurar a linha.
+        await self.session.execute(
+            select(func.set_config("lock_timeout", f"{lock_timeout_ms}ms", True))
+        )
         await self.session.execute(
             select(User.id).where(User.id == user_id).with_for_update()
         )

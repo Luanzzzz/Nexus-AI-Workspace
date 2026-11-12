@@ -56,7 +56,7 @@ def test_workspace_and_document_routes_document_error_responses():
     docs = detail + "/documents"
     item = docs + "/{document_id}"
     expected = {
-        (base, "post"): {"401", "409", "422"},
+        (base, "post"): {"401", "403", "409", "422", "429"},
         (base, "get"): {"401"},
         (detail, "get"): {"401", "404", "422"},
         (docs, "post"): {"401", "403", "404", "413", "415", "422", "429"},
