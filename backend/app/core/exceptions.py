@@ -69,3 +69,14 @@ class WorkspaceNotFoundError(Exception):
 class PermissionDeniedError(Exception):
     # Membro sem a permissão exigida pelo papel (403).
     pass
+
+
+class WorkspaceQuotaExceededError(Exception):
+    # Cota de documentos ou de bytes do workspace esgotada (413).
+    # Sem números nem nomes: o handler responde com detalhe genérico.
+    pass
+
+
+class WorkspaceLimitExceededError(Exception):
+    # O usuário já é dono do máximo de workspaces permitido (403).
+    pass

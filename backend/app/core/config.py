@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     auth_login_per_ip_limit: int = 20
     auth_register_per_ip_limit: int = 5
     auth_rate_limit_window_seconds: int = 60
+    # Limites de upload por usuário (em memória, por processo; ADR 0009).
+    upload_limits_enabled: bool = True
+    upload_rate_limit_per_minute: int = 20
+    upload_max_concurrent_per_user: int = 2
+    # Cotas por workspace e limites de criação de workspace (ADR 0008/0009).
+    workspace_max_documents: int = 1000
+    workspace_max_storage_bytes: int = 1_073_741_824
+    workspace_max_owned_per_user: int = 10
+    workspace_create_rate_limit_enabled: bool = True
+    workspace_create_rate_limit_per_hour: int = 10
     trusted_proxies: str = ""
     # Diretório do storage de documentos: fora de qualquer pasta pública e do Git.
     document_storage_dir: Path = ROOT_DIR / "backend" / "var" / "documents"
@@ -178,6 +188,12 @@ class Settings(BaseSettings):
         "auth_login_per_ip_limit",
         "auth_register_per_ip_limit",
         "auth_rate_limit_window_seconds",
+        "upload_rate_limit_per_minute",
+        "upload_max_concurrent_per_user",
+        "workspace_max_documents",
+        "workspace_max_storage_bytes",
+        "workspace_max_owned_per_user",
+        "workspace_create_rate_limit_per_hour",
     )
     @classmethod
     def _validate_positive(cls, value: int) -> int:

@@ -164,3 +164,38 @@ async def permission_denied_exception_handler(
         status_code=status.HTTP_403_FORBIDDEN,
         content={"detail": FORBIDDEN_DETAIL},
     )
+
+
+WORKSPACE_QUOTA_DETAIL = "Cota de armazenamento do workspace excedida."
+WORKSPACE_LIMIT_DETAIL = "Limite de workspaces atingido."
+
+
+def rate_limited_response(retry_after: int) -> JSONResponse:
+    # Mesmo corpo e cabeçalhos do 429 de login/cadastro (Phase 2).
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": RATE_LIMITED_DETAIL},
+        headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+    )
+
+
+async def workspace_quota_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        content={"detail": WORKSPACE_QUOTA_DETAIL},
+    )
+
+
+async def workspace_limit_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": WORKSPACE_LIMIT_DETAIL},
+    )

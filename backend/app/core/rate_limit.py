@@ -70,3 +70,44 @@ class SlidingWindowLimiter:
 
 
 limiter = SlidingWindowLimiter()
+
+
+# Instâncias separadas: o limite de upload e o de criação de workspace não
+# dividem chaves nem janelas com o de login/cadastro.
+upload_limiter = SlidingWindowLimiter()
+workspace_create_limiter = SlidingWindowLimiter()
+
+
+class ConcurrencyLimiter:
+    """Teto de operações simultâneas por chave (em memória, por processo)."""
+
+    def __init__(self) -> None:
+        self._active: dict[str, int] = {}
+        self._lock = Lock()
+
+    def acquire(self, key: str, limit: int) -> bool:
+        with self._lock:
+            current = self._active.get(key, 0)
+            if current >= limit:
+                return False
+            self._active[key] = current + 1
+            return True
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            current = self._active.get(key, 0)
+            if current <= 1:
+                self._active.pop(key, None)
+            else:
+                self._active[key] = current - 1
+
+    def active(self, key: str) -> int:
+        with self._lock:
+            return self._active.get(key, 0)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._active.clear()
+
+
+upload_concurrency = ConcurrencyLimiter()

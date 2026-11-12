@@ -9,9 +9,17 @@ consumir qualquer byte do corpo:
 2. Authorization Bearer validado SEM banco (mesma `decode_access_token` do
    get_current_user: assinatura, algoritmo, exp, claims) -> 401 idêntico ao de
    get_current_user. Nada é lido nem gravado em disco.
-3. Hook de rate limit por usuário (`enforce_upload_rate_limit`), ainda sem corpo.
-4. O `receive` é envolvido e conta os bytes: ao passar do teto a leitura é
+3. Rate limit por usuário (`enforce_upload_rate_limit`, janela deslizante), ainda
+   sem corpo -> 429 + Retry-After.
+4. Limite de uploads simultâneos por usuário (vaga adquirida aqui e devolvida
+   num `finally` quando o app termina, inclusive em erro, desconexão e
+   cancelamento) -> 429 + Retry-After: 1, ainda sem corpo.
+5. O `receive` é envolvido e conta os bytes: ao passar do teto a leitura é
    abortada e a resposta é 413 (a resposta do app, se houver, é descartada).
+
+Os limites de 3 e 4 são em memória e POR PROCESSO (ADR 0009): com vários workers
+o teto efetivo é multiplicado; produção multi-worker precisa de store
+compartilhado ou limite no proxy.
 
 Usuário ativo, membership e papel continuam sendo checados no banco pelas
 dependencies depois deste guarda. Um usuário autenticado sem membership ainda
@@ -25,7 +33,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.dependencies.auth import NOT_AUTHENTICATED_DETAIL
-from app.api.exception_handlers import document_too_large_response
+from app.api.exception_handlers import (
+    document_too_large_response,
+    rate_limited_response,
+)
+from app.core.config import settings
+from app.core.rate_limit import upload_concurrency, upload_limiter
 from app.core.tokens import AccessTokenClaims, InvalidTokenError, decode_access_token
 from app.services.document_validation import MAX_UPLOAD_BYTES
 
@@ -35,6 +48,8 @@ BODY_LIMIT = MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD
 
 # `[^/]+` (e não só dígitos): um id malformado também não pode escapar do guarda,
 # pois o FastAPI lê o corpo antes de validar o path.
+UPLOAD_RATE_WINDOW_SECONDS = 60
+
 _UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[^/]+/documents$")
 
 
@@ -69,13 +84,21 @@ def authenticate_bearer(scope: Scope) -> AccessTokenClaims | None:
 
 
 async def enforce_upload_rate_limit(user_id: int, scope: Scope) -> Response | None:
-    """Gancho do limite por usuário: roda após o JWT e antes de ler o corpo.
+    """Rate limit por usuário: roda após o JWT e antes de ler o corpo.
 
-    Devolva uma Response (ex.: 429) para encerrar a requisição; None deixa
-    passar. Ainda não implementado.
+    Devolve 429 (Retry-After) se a janela estourou; None deixa passar.
     """
-    _ = (user_id, scope)
-    return None
+    _ = scope
+    if not settings.upload_limits_enabled:
+        return None
+    allowed, retry_after = upload_limiter.hit(
+        f"upload:user:{user_id}",
+        settings.upload_rate_limit_per_minute,
+        UPLOAD_RATE_WINDOW_SECONDS,
+    )
+    if allowed:
+        return None
+    return rate_limited_response(retry_after)
 
 
 def _declared_length_exceeds(scope: Scope) -> bool:
@@ -100,6 +123,7 @@ class UploadGuardMiddleware:
             return
 
         early: Response | None = None
+        slot_key: str | None = None
         if _declared_length_exceeds(scope):
             early = document_too_large_response()
         else:
@@ -109,10 +133,27 @@ class UploadGuardMiddleware:
             else:
                 scope.setdefault("state", {})["upload_user_id"] = claims.user_id
                 early = await enforce_upload_rate_limit(claims.user_id, scope)
+                if early is None and settings.upload_limits_enabled:
+                    key = f"upload:user:{claims.user_id}"
+                    if upload_concurrency.acquire(
+                        key, settings.upload_max_concurrent_per_user
+                    ):
+                        slot_key = key
+                    else:
+                        early = rate_limited_response(1)
         if early is not None:
             await early(scope, receive, send)
             return
 
+        try:
+            await self._run_bounded(scope, receive, send)
+        finally:
+            # Exatamente uma vez por vaga adquirida (sucesso, erro, desconexão
+            # ou cancelamento); early-return acima nunca adquiriu vaga.
+            if slot_key is not None:
+                upload_concurrency.release(slot_key)
+
+    async def _run_bounded(self, scope: Scope, receive: Receive, send: Send) -> None:
         received = 0
         exceeded = False
         started = False

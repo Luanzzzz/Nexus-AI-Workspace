@@ -10,7 +10,9 @@ from app.api.exception_handlers import (
     permission_denied_exception_handler,
     request_validation_exception_handler,
     unsupported_document_exception_handler,
+    workspace_limit_exception_handler,
     workspace_not_found_exception_handler,
+    workspace_quota_exception_handler,
 )
 from app.api.middleware import RequestContextMiddleware
 from app.api.upload_guard import UploadGuardMiddleware
@@ -26,7 +28,9 @@ from app.core.exceptions import (
     InvalidDocumentError,
     PermissionDeniedError,
     UnsupportedDocumentTypeError,
+    WorkspaceLimitExceededError,
     WorkspaceNotFoundError,
+    WorkspaceQuotaExceededError,
 )
 from app.core.logging import configure_logging
 
@@ -87,6 +91,14 @@ def create_app() -> FastAPI:
     application.add_exception_handler(
         PermissionDeniedError,
         permission_denied_exception_handler,
+    )
+    application.add_exception_handler(
+        WorkspaceQuotaExceededError,
+        workspace_quota_exception_handler,
+    )
+    application.add_exception_handler(
+        WorkspaceLimitExceededError,
+        workspace_limit_exception_handler,
     )
     # Ordem: o último adicionado é o mais externo. O guarda fica DENTRO do contexto
     # de request (X-Request-ID nas respostas dele) e antes de qualquer leitura.
