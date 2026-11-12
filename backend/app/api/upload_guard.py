@@ -50,7 +50,24 @@ BODY_LIMIT = MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD
 # pois o FastAPI lê o corpo antes de validar o path.
 UPLOAD_RATE_WINDOW_SECONDS = 60
 
-_UPLOAD_PATH = re.compile(r"^/api/v1/workspaces/[^/]+/documents$")
+# Prefixo opcional (`root_path` do uvicorn --root-path, Mount, proxy): o path de
+# rota é o que sobra depois dele. Fail-safe: qualquer prefixo antes do padrão
+# ainda aplica o guarda, pois o app pode alcançar a rota (ver `_route_path`).
+_UPLOAD_PATH = re.compile(r"^(?:/.*)?/api/v1/workspaces/[^/]+/documents$", re.DOTALL)
+
+
+def _route_path(scope: Scope) -> str:
+    """Path usado no roteamento: `scope["path"]` sem o `root_path`.
+
+    O Starlette tem duas convenções: path COM o root_path (ASGI >= 2.4, uvicorn
+    --root-path, Mount) e path SEM ele. Remove o prefixo só se presente e em
+    fronteira de segmento; os dois casos resultam no mesmo path de rota.
+    """
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "").rstrip("/")
+    if root_path and (path == root_path or path.startswith(root_path + "/")):
+        return path[len(root_path) :] or "/"
+    return path
 
 
 class _BodyTooLargeError(Exception):
@@ -83,12 +100,11 @@ def authenticate_bearer(scope: Scope) -> AccessTokenClaims | None:
         return None
 
 
-async def enforce_upload_rate_limit(user_id: int, scope: Scope) -> Response | None:
+async def enforce_upload_rate_limit(user_id: int) -> Response | None:
     """Rate limit por usuário: roda após o JWT e antes de ler o corpo.
 
     Devolve 429 (Retry-After) se a janela estourou; None deixa passar.
     """
-    _ = scope
     if not settings.upload_limits_enabled:
         return None
     allowed, retry_after = upload_limiter.hit(
@@ -117,7 +133,7 @@ class UploadGuardMiddleware:
         if (
             scope["type"] != "http"
             or scope["method"] != "POST"
-            or not _UPLOAD_PATH.fullmatch(scope["path"])
+            or not _UPLOAD_PATH.fullmatch(_route_path(scope))
         ):
             await self.app(scope, receive, send)
             return
@@ -131,8 +147,7 @@ class UploadGuardMiddleware:
             if claims is None:
                 early = _unauthorized_response()
             else:
-                scope.setdefault("state", {})["upload_user_id"] = claims.user_id
-                early = await enforce_upload_rate_limit(claims.user_id, scope)
+                early = await enforce_upload_rate_limit(claims.user_id)
                 if early is None and settings.upload_limits_enabled:
                     key = f"upload:user:{claims.user_id}"
                     if upload_concurrency.acquire(
