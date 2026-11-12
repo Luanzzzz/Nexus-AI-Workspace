@@ -286,3 +286,52 @@ async def test_recheck_holds_share_lock_until_commit(harness, data, monkeypatch)
     response = await asyncio.wait_for(task, 10)
     assert response.status_code == 201
     assert await _doc_count(data.workspace_id) == 1
+
+
+# --- R03: lock_timeout é local à transação ------------------------------------
+
+
+async def _lock_timeout_on_pooled_connection(engine) -> str:
+    # pool_size=1/max_overflow=0: é a MESMA conexão usada pela operação.
+    async with engine.connect() as conn:
+        return await conn.scalar(text("SHOW lock_timeout"))
+
+
+async def test_upload_lock_timeout_does_not_leak_to_pooled_connection(harness, data):
+    client, storage, engine = harness
+    default = await _lock_timeout_on_pooled_connection(engine)
+    storage.release.set()
+    response = await asyncio.wait_for(_upload(client, data), 10)
+
+    assert response.status_code == 201
+    assert await _lock_timeout_on_pooled_connection(engine) == default == "0"
+
+
+async def test_create_workspace_lock_timeout_does_not_leak_to_pooled_connection(
+    harness, data
+):
+    from app.schemas.workspace import WorkspaceCreate
+    from app.services.workspace import WorkspaceService
+
+    _, _, engine = harness
+    maker = async_sessionmaker(bind=engine, expire_on_commit=False)
+    slug = f"lt-{uuid4().hex[:12]}"
+    created_id = None
+    try:
+        async with maker() as session:
+            owner = await session.get(User, data.user_id)
+            workspace = await WorkspaceService(session).create_workspace(
+                WorkspaceCreate(name="WS", slug=slug), owner
+            )
+            created_id = workspace.id
+        assert await _lock_timeout_on_pooled_connection(engine) == "0"
+    finally:
+        if created_id is not None:
+            async with SessionLocal() as s:
+                await s.execute(
+                    delete(WorkspaceMember).where(
+                        WorkspaceMember.workspace_id == created_id
+                    )
+                )
+                await s.execute(delete(Workspace).where(Workspace.id == created_id))
+                await s.commit()
