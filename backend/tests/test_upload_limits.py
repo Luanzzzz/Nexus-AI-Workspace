@@ -35,6 +35,7 @@ class _StubApp:
         self.entered = 0
         self.gate: asyncio.Event | None = None
         self.fail = False
+        self.only_marked = False
 
     async def __call__(self, scope, receive, send):
         self.entered += 1
@@ -42,7 +43,8 @@ class _StubApp:
             message = await receive()
             if not message.get("more_body"):
                 break
-        if self.gate is not None:
+        blocking = any(name == b"x-block" for name, _ in scope["headers"])
+        if self.gate is not None and (blocking or not self.only_marked):
             await self.gate.wait()
         if self.fail:
             raise RuntimeError("falha do app")
@@ -70,13 +72,14 @@ def limits_on(monkeypatch):
     monkeypatch.setattr(settings, "upload_max_concurrent_per_user", 2)
 
 
-def _post(client, user_id: int, body: _Body | None = None):
+def _post(client, user_id: int, body: _Body | None = None, extra=None):
     return client.post(
         "/api/v1/workspaces/1/documents",
         content=body or _Body(),
         headers={
             "Authorization": f"Bearer {create_access_token(user_id)}",
             "Content-Type": "multipart/form-data; boundary=b",
+            **(extra or {}),
         },
     )
 
@@ -137,7 +140,7 @@ async def test_concurrent_cap_blocks_third_upload_without_reading_body(
         await _until(lambda: stub.entered == 2)
 
         body = _Body()
-        third = await _post(client, 1, body)
+        third = await asyncio.wait_for(_post(client, 1, body), 3)
         assert third.status_code == 429
         assert third.json() == _RATE_LIMITED
         assert third.headers["Retry-After"] == "1"
@@ -207,3 +210,18 @@ async def test_real_app_is_wired_with_upload_limits(limits_on, monkeypatch):
     assert first.status_code == 401  # usuário inexistente: passou pelo guarda
     assert second.status_code == 429
     assert body.chunks == 0
+
+
+async def test_each_slot_is_released_exactly_once(client, stub, limits_on, monkeypatch):
+    monkeypatch.setattr(settings, "upload_rate_limit_per_minute", 100)
+    stub.gate = asyncio.Event()
+    stub.only_marked = True
+    async with client:
+        held = asyncio.create_task(_post(client, 1, extra={"x-block": "1"}))
+        await _until(lambda: stub.entered == 1)
+        # Um upload que termina sozinho não pode liberar a vaga do outro.
+        assert (await _post(client, 1)).status_code == 201
+        assert upload_concurrency.active("upload:user:1") == 1
+        stub.gate.set()
+        assert (await held).status_code == 201
+        assert upload_concurrency.active("upload:user:1") == 0
