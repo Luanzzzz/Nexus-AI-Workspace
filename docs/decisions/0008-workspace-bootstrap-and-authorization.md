@@ -43,3 +43,10 @@ A Fase 3 introduz workspaces como fronteira multi-tenant. Era preciso decidir co
 - `PATCH` e `DELETE` de workspace.
 - Endpoints de administração de membros (convite, troca de papel, remoção). Hoje memberships além do dono só entram por repositório/banco.
 - Rate limit nas rotas de workspace e documentos (só login e cadastro têm limite, ADR 0007).
+
+## Limites de criação de workspace (F04, aprovado pelo owner para o MVP)
+
+- `WORKSPACE_MAX_OWNED_PER_USER` (padrão 10): máximo de workspaces dos quais o usuário é dono. Verificado em `WorkspaceService.create_workspace`, dentro da transação, depois de `SELECT ... FROM users WHERE id = :id FOR UPDATE` (com `lock_timeout` local de 5 s): criações concorrentes do mesmo usuário se serializam e a contagem vê o que já confirmou, sem ultrapassar o teto. Excedido: **403** `{"detail": "Limite de workspaces atingido."}`. Escolhi 403 (política sobre o usuário autenticado) e não 409, que já significa "slug indisponível" e faria clientes tratarem o limite como conflito de slug.
+- `WORKSPACE_CREATE_RATE_LIMIT_PER_HOUR` (padrão 10; `WORKSPACE_CREATE_RATE_LIMIT_ENABLED`, padrão `true`): rate limit por usuário em `POST /api/v1/workspaces`, como dependency (roda depois da autenticação: 401 antes de 429). Excedido: **429** com `Retry-After` e o mesmo corpo do 429 da Fase 2. Em memória e por processo: com vários workers o teto efetivo é multiplicado; produção multi-worker precisa de store compartilhado ou limite no proxy.
+- As cotas de documentos por workspace estão no [ADR 0009](0009-document-local-storage.md).
+

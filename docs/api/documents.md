@@ -29,6 +29,8 @@ Fluxo: JWT, membership e permissão `document:upload` (só `owner` e `admin`), v
 | 403 | Membro com papel `member` ou `viewer` | `{"detail": "Permissão insuficiente."}` |
 | 404 | Workspace inexistente ou sem membership | `{"detail": "Workspace não encontrado."}` |
 | 413 | Arquivo acima de 10 MiB | `{"detail": "Arquivo excede o tamanho máximo de 10 MiB."}` |
+| 413 | Cota do workspace excedida (documentos ou bytes) | `{"detail": "Cota de armazenamento do workspace excedida."}` |
+| 429 | Limite de uploads por minuto ou de uploads simultâneos do usuário | `{"detail": "Muitas tentativas. Tente novamente mais tarde."}` com `Retry-After` |
 | 415 | Extensão fora da lista ou Content-Type incompatível | `{"detail": "Tipo de arquivo não suportado."}` |
 | 422 | Campo `file` ausente, nome inválido, arquivo vazio ou conteúdo incompatível com o tipo | `{"detail": "Arquivo inválido."}` ou lista de validação sem `input` |
 | 500 | Falha de storage ou banco | `{"detail": "Erro interno do servidor."}` |
@@ -41,7 +43,11 @@ O blob fica no diretório configurado por `DOCUMENT_STORAGE_DIR` (fora de pastas
 
 ### Limite no nível da requisição
 
-O Starlette lê o multipart para arquivo temporário antes das dependencies rodarem. Um middleware ASGI, restrito a este endpoint, age antes de ler qualquer byte do corpo, nesta ordem: (1) `Content-Length` declarado acima do limite mais 64 KiB de folga: 413; (2) Bearer JWT inválido, expirado ou ausente: 401 (`{"detail": "Não autenticado."}`, `WWW-Authenticate: Bearer`), validado sem banco; (3) durante a leitura, os bytes recebidos são contados e, acima do mesmo teto (inclusive corpos chunked), a leitura é abortada com 413. Usuário ativo, membership e papel continuam sendo verificados no banco depois (401/404/403). O limite exato do arquivo continua valendo no storage. Um usuário autenticado sem membership ainda pode causar até ~10 MiB de arquivo temporário por requisição até essa verificação; um limite por usuário está planejado. Um proxy reverso deve limitar o corpo também.
+O Starlette lê o multipart para arquivo temporário antes das dependencies rodarem. Um middleware ASGI, restrito a este endpoint, age antes de ler qualquer byte do corpo, nesta ordem: (1) `Content-Length` declarado acima do limite mais 64 KiB de folga: 413; (2) Bearer JWT inválido, expirado ou ausente: 401 (`{"detail": "Não autenticado."}`, `WWW-Authenticate: Bearer`), validado sem banco; (3) rate limit por usuário (padrão 20 uploads/60 s): 429 com `Retry-After`; (4) teto de uploads simultâneos por usuário (padrão 2): 429 com `Retry-After: 1`; (5) durante a leitura, os bytes recebidos são contados e, acima do mesmo teto (inclusive corpos chunked), a leitura é abortada com 413. Usuário ativo, membership e papel continuam sendo verificados no banco depois (401/404/403). O limite exato do arquivo continua valendo no storage. Um usuário autenticado sem membership ainda pode causar até ~10 MiB de arquivo temporário por requisição até essa verificação; os limites (3) e (4) restringem isso por usuário. Eles são em memória e por processo: com vários workers o teto efetivo é multiplicado (ver ADR 0009).
+
+### Cotas por workspace
+
+Padrões: 1000 documentos e 1 GiB (`size_bytes`) por workspace. A pré-checagem ocorre antes de gravar o blob; a checagem autoritativa, na transação de escrita sob `FOR UPDATE` do workspace, impede ultrapassagem sob concorrência. Em ambas a resposta é o 413 de cota acima, sem blob nem linha. Um proxy reverso deve limitar o corpo também.
 
 ## `GET /api/v1/workspaces/{workspace_id}/documents`
 

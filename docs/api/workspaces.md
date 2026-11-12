@@ -29,11 +29,13 @@ Cria o workspace e a membership `owner` do usuário autenticado.
 | --- | --- | --- |
 | 201 | Criado | `WorkspaceResponse` |
 | 401 | Token ausente ou inválido | `{"detail": "Não autenticado."}` |
+| 403 | Usuário já é dono do máximo de workspaces (padrão 10) | `{"detail": "Limite de workspaces atingido."}` |
 | 409 | Slug já existe (inclusive sob concorrência) | `{"detail": "Slug indisponível."}` |
+| 429 | Rate limit de criação por usuário (padrão 10/hora) | `{"detail": "Muitas tentativas. Tente novamente mais tarde."}` com `Retry-After` |
 | 422 | Corpo inválido, slug fora do formato ou campo extra | `detail` com `loc`, `type` e `msg`, sem `input` |
 | 500 | Falha interna | `{"detail": "Erro interno do servidor."}` |
 
-A mensagem do 409 é genérica e não ecoa o slug.
+A mensagem do 409 é genérica e não ecoa o slug. O 403 usa corpo distinto do 403 de permissão. O rate limit é em memória e por processo (ver ADR 0008).
 
 ### `GET /api/v1/workspaces`
 

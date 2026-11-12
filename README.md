@@ -68,6 +68,9 @@ A configuração vem de variáveis de ambiente ou do `.env` da raiz (modelo em `
 - `JWT_SECRET_KEY`: obrigatório, ≥32 bytes, sem placeholder e com entropia mínima. Gere com `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 - `TRUSTED_PROXIES`: lista vazia por padrão. Só IPs dessa lista podem fazer o app honrar `X-Forwarded-For` (rate limit), lendo a cadeia **da direita**. Suba com `python -m app` a partir de `backend/` (alinha `proxy_headers` / `forwarded_allow_ips` à lista). `uvicorn app.main:app` sem esses flags volta a confiar no loopback. O proxy deve anexar o IP do cliente, não o valor forjado.
 - `AUTH_RATE_LIMIT_ENABLED`: padrão `true`. Os testes desligam.
+- Limites de upload (em memória, por processo; ver ADR 0009): `UPLOAD_LIMITS_ENABLED` (`true`; os testes desligam), `UPLOAD_RATE_LIMIT_PER_MINUTE` (20 por usuário) e `UPLOAD_MAX_CONCURRENT_PER_USER` (2 por usuário). Excedidos: 429 com `Retry-After`.
+- Cotas por workspace: `WORKSPACE_MAX_DOCUMENTS` (1000) e `WORKSPACE_MAX_STORAGE_BYTES` (1073741824, 1 GiB). Excedidas: 413.
+- Criação de workspace (ADR 0008): `WORKSPACE_MAX_OWNED_PER_USER` (10; excedido: 403), `WORKSPACE_CREATE_RATE_LIMIT_ENABLED` (`true`; os testes desligam) e `WORKSPACE_CREATE_RATE_LIMIT_PER_HOUR` (10 por usuário; excedido: 429).
 - Pool: `DB_POOL_SIZE` (5), `DB_MAX_OVERFLOW` (10), `DB_POOL_TIMEOUT` (30), `DB_POOL_PRE_PING` (`true`).
 
 Erros 500 devolvem JSON genérico e o cabeçalho `X-Request-ID` (valor recebido só é ecoado se for hex/token curto). Fora de `development`, o log interno traz o mesmo id, o tipo da exceção e os frames (arquivo, linha, função), sem a mensagem, sem locals e sem o texto de `__cause__`/`__context__`. O traceback completo só em `development`, ainda passando por `redact_text()`.
