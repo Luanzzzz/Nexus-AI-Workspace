@@ -19,3 +19,9 @@ class CredentialVerificationError(Exception):
     # Não é erro do cliente; a mensagem não carrega hash nem senha.
     def __init__(self) -> None:
         super().__init__("Falha interna ao verificar credenciais.")
+
+
+class DuplicateSlugError(Exception):
+    # O slug do workspace já existe (UNIQUE global, ADR 0001).
+    # Sem o slug na mensagem: o handler responde 409 genérico.
+    pass
