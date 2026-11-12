@@ -1,36 +1,37 @@
 # Auditoria final da Fase 3 (Documents) — Etapa 3.8
 
-## 1. Veredito (estado atual — HEAD, após as revalidações das seções 10 e 11)
+## 1. Veredito (estado atual — HEAD `800f71c`, após as revalidações das seções 10, 11 e 12)
 
-**Aprovada com ressalvas para o escopo da fase (estudo local de Documents).** Nenhum achado Crítico ou Alto em aberto. A autorização multi-tenant, a validação de arquivos, a segurança de caminho do storage e a consistência SQL/filesystem se sustentaram em leitura de código, mutações dirigidas e probes de execução. O que sobra são riscos de **disponibilidade** (DoS anônimo e falta de cotas) e uma questão de **arquitetura** (serviço dependendo da camada de API, N01), não de vazamento entre tenants.
+**Aprovada para o merge da Fase 3 (escopo: estudo local de Documents / MVP), com ressalvas.** Nenhum achado Crítico ou Alto em aberto. A autorização multi-tenant, a validação de arquivos, a segurança de caminho do storage e a consistência SQL/filesystem se sustentaram em leitura de código, mutações dirigidas e probes de execução (inclusive contra um uvicorn real). A revalidação final (seção 12) confirmou N01-N03, o middleware ASGI e o F04 (cotas, rate limit, teto de simultâneos), e encontrou **um achado Médio condicional (R01)** e lacunas de teste menores (R02, R03), nenhum bloqueante para o merge.
 
-Estado dos achados originais (a tabela da seção 3 é o registro histórico da primeira passada; cada linha traz o status atual):
+Estado dos achados (a tabela da seção 3 é o registro histórico da primeira passada; cada linha traz o status atual):
 
-- **F01** (era Alto): **Parcial**. O corpo é limitado a ~10 MiB + 64 KiB por requisição, inclusive chunked e com `Content-Length` mentiroso; o spool anterior à autenticação ainda existe e não há limite de concorrência.
-- **F02, F05, F06, F07, F08, F09**: **Corrigidos** (seção 10).
-- **F03** (conexão presa durante o I/O): **Corrigido** (seção 11), com os novos riscos tratados lá.
-- **F04** (sem cotas/rate limit) e **F10-F14**: **Abertos — decisão do owner**.
+- **F01** (era Alto): **Parcial, reduzido a Baixo/Médio**. O middleware ASGI valida o JWT **sem banco antes de ler o corpo**: anônimo ou token inválido recebe 401 sem um byte lido (provado em ASGI e num uvicorn real: `size_upload=0`); o corpo é limitado a ~10 MiB + 64 KiB (chunked, `Content-Length` mentiroso e `http.disconnect` incluídos). Resta o spool de usuário **autenticado sem membership/inativo** (limitado por rate limit e teto de simultâneos por usuário) e a **fuga do guarda quando há `root_path`/mount (R01)**.
+- **F02, F05, F06, F07, F08, F09**: **Corrigidos** (seção 10). **F03**: **Corrigido** (seção 11).
+- **F04** (sem cota/rate limit): **Atendido para o MVP** (aprovado pelo owner): rate limit e teto de simultâneos por usuário, cota por workspace (documentos e bytes) e teto de workspaces por dono, com mutações mortas, exceto lacunas de teste R02/R03. Limites em memória e **por processo**.
+- **G01** (`request._receive`): **Corrigido** (middleware ASGI puro). **G02**: **Reduzido** (ver F01). **G03-G05, N04, N05**: informativos/baixos, sem mudança relevante. **N01, N02, N03**: **Corrigidos** (seção 12).
+- **F10, F11, F12, F13**: **Abertos, informativos**. **F14**: aceito (decisão 3 do owner). As 5 decisões do MVP do owner (2026-11-12) estão registradas nos ADRs 0008/0009 (seção 9).
 
-Bloqueantes para o **merge da fase**: nenhum. Recomendo registrar aceitação do owner para F04/F01 residual (seção 9) e considerar N01 (camadas). Para **exposição pública** continuam bloqueantes: cotas, rate limit/limite de concorrência nos uploads e mitigação do spool pré-autenticação (tabela de riscos na seção 7).
+Bloqueantes para o **merge da fase**: nenhum. Recomendo corrigir R01 (alteração pequena) antes ou logo após o merge, ou documentar "não usar `--root-path`/mount sem corrigir". Para **exposição pública** continuam necessários: limite de corpo no proxy, store compartilhado (ou limites no proxy) se houver mais de um worker, operacionalização da reconciliação, tratamento de PDF mais rigoroso conforme uso e os residuais da Fase 2 (tabela de riscos na seção 7).
 
 ## 2. Escopo e método
 
-- Branch `feat/phase3-e-hardening-audit`, 6 commits sobre `main` (`aa01e77` .. `817b672`): A fundação de workspace, B modelo, C storage/upload, D consultas/exclusão, E testes e ADRs. 49 arquivos, +4594 linhas.
+- Branch `feat/phase3-e-hardening-audit` (PR #6, empilhada sobre #2-#5). Primeira passada: 6 commits sobre `main` (`aa01e77` .. `817b672`): A fundação de workspace, B modelo, C storage/upload, D consultas/exclusão, E testes e ADRs. Revalidações posteriores cobrem os commits até o HEAD `800f71c` (seções 10, 11 e 12).
 - Auditor independente: não escrevi nem alterei código, testes ou ADRs. O único artefato é este arquivo.
 - Lido na íntegra: `storage/local.py`, `services/document*.py`, `services/workspace.py`, repositórios, dependencies, rotas, schemas, handlers, migration, modelo, ADRs 0008/0009, `docs/api/*`, README, workflow de CI e a lista de testes.
 - **Mutação**: 38 mutações aplicadas no repositório e revertidas com `git checkout -- <arquivo>` logo após a suíte completa (`git status` limpo ao final). 34 foram mortas pela suíte; 1 é equivalente (M15); 3 sobreviveram (M20 e M35, ver F05; M37, `list_blobs` sem checar o shard, inócua porque `delete()` não acharia o arquivo).
 - **Probes** (scripts só no scratchpad): spool pré-autenticação, conexão do pool durante o upload, cancelamento do `save()`, permissões do storage, sanitização de nomes unicode, round-trip `alembic downgrade -1`/`upgrade head`.
 - `.env.example` e `backend/.env.example`: a leitura me era vedada por permissão; o **owner inspecionou manualmente** os dois arquivos e confirmou que só foi adicionada a configuração de storage, comentada, sem nenhum segredo real (informação do owner, não verificada por mim).
 
-### Validação da primeira passada (histórico; números superados — ver 10.1 e 11.1 para o estado atual)
+### Validação da primeira passada (histórico; números superados — ver 10.1, 11.1 e **12.1** para o estado atual no HEAD)
 
 | Comando | Resultado |
 | --- | --- |
-| `ruff check .` / `ruff format --check .` | `All checks passed!` / `147 files already formatted` |
-| `POSTGRES_PORT=1 POSTGRES_DB=nexus_ai_test pytest -m "not integration" -q` | 299 passed, 183 deselected (superado: 315 passed, 190 deselected no HEAD) |
-| `POSTGRES_DB=nexus_ai_test pytest -q` | 482 passed, 1 warning (superado: **505 passed** no HEAD) |
+| `ruff check .` / `ruff format --check .` | `All checks passed!` / `147 files already formatted` (superado: 155 arquivos no HEAD) |
+| `POSTGRES_PORT=1 POSTGRES_DB=nexus_ai_test pytest -m "not integration" -q` | 299 passed, 183 deselected (superado: **325 passed, 221 deselected** no HEAD `800f71c`) |
+| `POSTGRES_DB=nexus_ai_test pytest -q` | 482 passed, 1 warning (superado: **546 passed** no HEAD `800f71c`) |
 | `POSTGRES_DB=nexus_ai_test alembic check` | `No new upgrade operations detected.` Round-trip downgrade/upgrade ok, head `845eb9180446` |
-| `gh pr checks 2,3,4,5` | `test` e `unit` **pass** nos quatro PRs |
+| `gh pr checks 2,3,4,5` | `test` e `unit` **pass** nos quatro PRs (superado: PR #6, run `43302165607`, head `800f71c`, `test` e `unit` **pass**) |
 
 Ressalva: o CI usa Python 3.12 e a máquina local 3.14; ambos passam.
 
@@ -38,24 +39,24 @@ Ressalva: o CI usa Python 3.12 e a máquina local 3.14; ambos passam.
 
 | ID | Severidade | Achado | Evidência | Impacto | Correção recomendada | Status atual |
 | --- | --- | --- | --- | --- | --- | --- |
-| F01 | **Alto** | Multipart é lido e gravado (spool em disco acima de 1 MiB) **antes** da autenticação; corpos chunked não têm teto. O guarda só atua com `Content-Length` declarado. | `backend/app/api/v1/documents.py:116-136`; FastAPI 0.162 `routing.py:455` (`request.form()` antes de `solve_dependencies`). Probe: não autenticado, 5 MiB com `Content-Length` → 401 após 5 242 880 bytes gravados; chunked de **200 MiB** → 401 após 209 715 200 bytes gravados | DoS de disco/CPU/tempo por qualquer cliente anônimo; o limite de 10 MiB não protege a rota. Divulgado no ADR 0009 (trade-offs) | Middleware ASGI que conta bytes do corpo e responde 413 mesmo sem `Content-Length` (ou exigir 411 na rota), e/ou limite no proxy. Decisão do dono (seção 9) | Parcial — ver §10/§11 (Alto superado; Médio residual) |
+| F01 | **Alto** | Multipart é lido e gravado (spool em disco acima de 1 MiB) **antes** da autenticação; corpos chunked não têm teto. O guarda só atua com `Content-Length` declarado. | `backend/app/api/v1/documents.py:116-136`; FastAPI 0.162 `routing.py:455` (`request.form()` antes de `solve_dependencies`). Probe: não autenticado, 5 MiB com `Content-Length` → 401 após 5 242 880 bytes gravados; chunked de **200 MiB** → 401 após 209 715 200 bytes gravados | DoS de disco/CPU/tempo por qualquer cliente anônimo; o limite de 10 MiB não protege a rota. Divulgado no ADR 0009 (trade-offs) | Middleware ASGI que conta bytes do corpo e responde 413 mesmo sem `Content-Length` (ou exigir 411 na rota), e/ou limite no proxy. Decisão do dono (seção 9) | **Parcial** — ver §10/§12. Alto superado. JWT validado sem banco antes de ler o corpo (§12); resta o spool de usuário autenticado sem membership/inativo (limitado por F04) e a fuga do guarda com `root_path`/mount (**R01**, Médio condicional) |
 | F02 | **Médio** | ADR 0008 afirma que a autorização roda "antes de qualquer escrita ou leitura de corpo da rota". É falso para a leitura de corpo e contradiz o ADR 0009. | `docs/decisions/0008-workspace-bootstrap-and-authorization.md`, item "404 versus 403"; medição de F01 | Garantia de segurança documentada que não existe | Trocar por "antes de qualquer escrita no storage; o corpo multipart é lido antes (ver ADR 0009)" | Corrigido — ver §10 |
 | F03 | **Médio** | A sessão abre transação nas dependencies de auth (`get_current_user`, membership) e só a encerra no `commit`/`rollback`; o `storage.save()` (até 10 MiB, com `fsync`) roda com a conexão do pool presa. | `backend/app/services/document.py:51-57`. Probe: `engine.pool.checkedout() == 1` dentro de `save()` | Com pool 5+10 (`config.py:122-123`), ~15 uploads lentos concorrentes esgotam o pool e derrubam todas as rotas (mesma classe do A3 da Fase 2) | Encerrar a transação de leitura (`await session.commit()` ou `rollback()`; `expire_on_commit=False`) antes do `save()`, com teste de pool `pool_size=1` como em `test_auth_connection_release.py` | Corrigido — ver §11 |
-| F04 | **Médio** | Sem cota nem rate limit: cadastro aberto, qualquer usuário cria workspaces ilimitados e, sendo `owner`, sobe documentos ilimitados. | `docs/api/workspaces.md` (Limites), ADR 0008 (fora de escopo); `api/v1/workspaces.py:199-211` | Esgotamento de disco por conta autenticada | Cota por workspace/usuário (bytes e documentos) e rate limit nas rotas; aceitar explicitamente para o MVP | Aberto — decisão do owner |
+| F04 | **Médio** | Sem cota nem rate limit: cadastro aberto, qualquer usuário cria workspaces ilimitados e, sendo `owner`, sobe documentos ilimitados. | `docs/api/workspaces.md` (Limites), ADR 0008 (fora de escopo); `api/v1/workspaces.py:199-211` | Esgotamento de disco por conta autenticada | Cota por workspace/usuário (bytes e documentos) e rate limit nas rotas; aceitar explicitamente para o MVP | **Atendido para o MVP** (aprovado pelo owner) — ver §12: rate limit e teto de simultâneos por usuário, cota por workspace, teto de workspaces por dono; em memória e por processo; lacunas de teste R02/R03 |
 | F05 | Baixo | Testes que passariam sem a proteção: (a) `test_declared_content_length_far_over_limit_is_rejected_early` só confere 413 e `_blobs == []`; sem o guarda de `Content-Length` (M20) o limite do storage devolve o mesmo resultado; (b) M35: `list_blobs` com `is_file()` seguindo symlink não é pego (a segunda camada, `delete()` com `S_ISREG`, mascara). | `tests/test_document_upload_api.py:266-277`; `storage/local.py:246-252` | O guarda de F01 e a varredura sem symlink não têm teste dedicado | (a) Espionar `storage.save` e afirmar que não foi chamado/que o corpo não foi lido; (b) teste de `list_blobs` com symlink para fora do root | Corrigido — ver §10 |
 | F06 | Baixo | Cancelamento do request pode vazar descritores e `.part`: se a task é cancelada durante `to_thread(self._start, ...)`, a tupla `(root_fd, tmp_fd, fd)` nunca é atribuída e os fds/arquivo ficam sem dono; em `_write_all`, o `except` fecha `fd` enquanto a thread ainda escreve (risco de reuso do número do fd). Não reproduzido (janela estreita), só por leitura. | `storage/local.py:96-97,103-111,121-146` | Vazamento lento de fds; escrita num fd reaproveitado em caso extremo | Abrir os fds dentro de `asyncio.shield` ou tornar a thread dona da limpeza; reconciliação já recolhe `.part` e blob publicado | Corrigido — ver §10 |
 | F07 | Baixo | OpenAPI não declara 401/403/404 nos endpoints de documentos e workspace (upload só 413/415/422; list sem 404; `GET /workspaces/{id}` sem 404). Spec 3.2: "OpenAPI documenta". | `api/v1/documents.py:158-167,183`; `api/v1/workspaces.py:223` | Contrato público incompleto; o `docs/api` está correto | Declarar `responses` (401/403/404) ou um helper comum | Corrigido — ver §10 |
 | F08 | Baixo | Sanitização de nome: U+2028 (Zl), NBSP e variation selectors passam; só NFC, sem NFKC/confusáveis (`ＮＯＴＥ.md` mantido); limite de 255 é em caracteres, não bytes. Probe confirmou. O nome é só exibição, nunca caminho. | `services/document_validation.py:325-344` | Spoofing visual em UI futura; sem efeito no disco | Incluir Zl/Zp e espaços exóticos em `_DROP`; decidir NFKC (residual QA10 da Fase 2) | Corrigido — ver §10 |
 | F09 | Baixo | `reconcile_orphans` aceita `min_age_seconds=0` ou negativo; com `dry_run=False` isso removeria blob publicado cuja linha ainda não foi confirmada, deixando a linha apontando para nada. O padrão (1 h) é seguro e o mtime reflete a última escrita. Sem CLI nem agendador. | `services/document_reconciliation.py:202-225,242-250` | Só por chamada manual errada; órfãos se acumulam até alguém executar | Piso mínimo de idade (ex.: 5 min) com erro explícito; CLI/agendamento na Fase 4 | Corrigido — ver §10 |
-| F10 | Informativo | Exclusões concorrentes do mesmo documento: ambas leem a linha, a segunda apaga 0 linhas (aviso do SQLAlchemy) e responde 204 em vez de 404; benigno (idempotente), não reproduzido. | `services/document.py:98-113` | Nenhum dado exposto | Opcional: tratar `rowcount == 0` como 404 | Aberto — decisão do owner |
-| F11 | Informativo | Os testes de API usam sessão com `join_transaction_mode="create_savepoint"`: `commit`/`rollback` reais, liberação de conexão e concorrência de upload/delete não são exercitados; falhas de commit são simuladas. | `tests/test_document_upload_api.py:44-56` | Explica por que F03 passou despercebido | Um teste sem savepoint (como em `test_auth_connection_release.py`) | Aberto — decisão do owner |
-| F12 | Informativo | Reconciliação só cobre blob sem linha. Linha sem blob (restauração parcial de backup) não é detectada. PDF só confere `%PDF-` (polyglot aceito) e TXT aceita controles além de NUL; ambos divulgados. | ADR 0009; `document_validation.py:371-387` | Aceito no MVP | Fase 4: validação estrutural de PDF; checagem inversa na reconciliação | Aberto — decisão do owner |
-| F13 | Informativo | `uploaded_by` e `owner_id` (inteiros sequenciais) são expostos a qualquer papel, inclusive `viewer`; sem índice em `documents.uploaded_by` (FK RESTRICT). Root pré-existente com 0755 não é endurecido (blobs 0600, shards 0700 verificados). Código depende de `dir_fd`/`O_NOFOLLOW` (POSIX). | `schemas/document.py`, `schemas/workspace.py:166-173`; probe de permissões | Sem vazamento entre tenants (IDOR bloqueado por workspace) | Decisão de produto sobre ids públicos; documentar "POSIX only" | Aberto — decisão do owner |
-| F14 | Informativo | 409 de slug confirma a existência de slugs de outros tenants (enumeração). Documentado no ADR 0008. | `services/workspace.py:34-37` | Baixo | Aceito; ver seção 9 | Aberto — decisão do owner |
+| F10 | Informativo | Exclusões concorrentes do mesmo documento: ambas leem a linha, a segunda apaga 0 linhas (aviso do SQLAlchemy) e responde 204 em vez de 404; benigno (idempotente), não reproduzido. | `services/document.py:98-113` | Nenhum dado exposto | Opcional: tratar `rowcount == 0` como 404 | Aberto — informativo (sem mudança; benigno) |
+| F11 | Informativo | Os testes de API usam sessão com `join_transaction_mode="create_savepoint"`: `commit`/`rollback` reais, liberação de conexão e concorrência de upload/delete não são exercitados; falhas de commit são simuladas. | `tests/test_document_upload_api.py:44-56` | Explica por que F03 passou despercebido | Um teste sem savepoint (como em `test_auth_connection_release.py`) | Aberto — informativo (os testes novos de F03/F04 usam sessões reais sem savepoint, o que mitiga na prática; sem teste de upload/delete concorrentes) |
+| F12 | Informativo | Reconciliação só cobre blob sem linha. Linha sem blob (restauração parcial de backup) não é detectada. PDF só confere `%PDF-` (polyglot aceito) e TXT aceita controles além de NUL; ambos divulgados. | ADR 0009; `document_validation.py:371-387` | Aceito no MVP | Fase 4: validação estrutural de PDF; checagem inversa na reconciliação | Aberto — informativo (aceito no MVP; PDF só pelo cabeçalho) |
+| F13 | Informativo | `uploaded_by` e `owner_id` (inteiros sequenciais) são expostos a qualquer papel, inclusive `viewer`; sem índice em `documents.uploaded_by` (FK RESTRICT). Root pré-existente com 0755 não é endurecido (blobs 0600, shards 0700 verificados). Código depende de `dir_fd`/`O_NOFOLLOW` (POSIX). | `schemas/document.py`, `schemas/workspace.py:166-173`; probe de permissões | Sem vazamento entre tenants (IDOR bloqueado por workspace) | Decisão de produto sobre ids públicos; documentar "POSIX only" | Parcial — leitura por todos os papéis aprovada (decisão 5 do owner); exposição de `uploaded_by`/`owner_id`, índice em `uploaded_by` e "POSIX only" sem decisão explícita |
+| F14 | Informativo | 409 de slug confirma a existência de slugs de outros tenants (enumeração). Documentado no ADR 0008. | `services/workspace.py:34-37` | Baixo | Aceito; ver seção 9 | **Aceito** — slug e 409 aprovados pelo owner (decisão 3, 2026-11-12; ADR 0008) |
 
 ## 4. Verificações sem achado (resumo)
 
-- **Arquitetura:** router orquestra, service decide, repositório só SQL; nenhum repositório chama `commit()`; sem `Protocol`/camadas fictícias; `_BoundedUploadRoute` é a única abstração extra e se justifica.
+- **Arquitetura:** router orquestra, service decide, repositório só SQL; nenhum repositório chama `commit()`; sem `Protocol`/camadas fictícias; `_BoundedUploadRoute` é a única abstração extra e se justifica. *(Histórico: `_BoundedUploadRoute` foi substituída pelo `UploadGuardMiddleware`, seção 12.)*
 - **Multi-tenant (BOLA/IDOR):** todas as 7 rotas passam por `require_permission`; `workspace_id` usado nos serviços vem de `membership.workspace_id`, não do path; toda consulta de `DocumentRepository` filtra por `workspace_id`. Mutações M01-M03 (remover o filtro) e M04-M06 (matriz, 404→403) foram **mortas**. 404 idêntico para workspace inexistente e sem membership, e para documento inexistente e de outro workspace; corpos sem metadado.
 - **SQL x filesystem:** ordem upload = blob, linha, commit, compensação em falha (M14 morta); delete = linha, commit, blob (M21 morta). Janelas de crash: entre o blob e o commit (órfão) e entre o commit e o `unlink` do delete (órfão); ambas recuperáveis pela reconciliação. A reconciliação **nunca remove blob com linha** (M07 morta), só considera blobs com mais de 1 h (M08 morta), só age sobre arquivo regular com nome de chave válido e nunca sai do root (varredura por `dir_fd` + `O_NOFOLLOW`; M36 morta). Upload em andamento não é confundido com órfão pela regra de 1 h (ver F09 para o piso).
 - **Validação:** UTF-8 incremental (M17, M18 mortas), PDF (M16 morta; M15 equivalente, pois `finish()` repete a checagem), NUL (M26), vazio (M25), Content-Type contraditório (M24), traversal no nome (M23), controles/bidi no nome (M22), limite de 10 MiB exato (M12, M13), `.part` removido em falha (M27).
@@ -124,7 +125,7 @@ Legenda: ✓ atendido, parcial, ✗ não atendido.
 | 201 válido, `status="uploaded"` | ✓ | `test_owner_and_admin_can_upload` |
 | `python-multipart` nas dependências | ✓ | `pyproject.toml` |
 | Não autorizado rejeitado **antes de armazenar** | ✓ | `documents.py:176` (dependency); M04/M06 mortas |
-| Não autorizado rejeitado antes de **ler/gravar o corpo** | ✗ | F01/F02 (probe) |
+| Não autorizado rejeitado antes de **ler/gravar o corpo** | parcial (era ✗) | JWT ausente/inválido: 401 sem ler o corpo (middleware, §12; probes ASGI e uvicorn). Membership/papel/usuário ativo ainda são checados depois da leitura (≤ ~10 MiB por requisição, limitado por F04); R01 |
 | >10 MiB rejeitado; tipo não permitido rejeitado | ✓ | `test_over_limit_gets_413_without_persisting`, `test_invalid_uploads_are_rejected_without_persisting` |
 | PDF `%PDF-`; TXT/MD UTF-8 | ✓ | M15-M18 |
 | Falha SQL aciona limpeza | ✓ | M14 morta |
@@ -161,7 +162,7 @@ Todos os cenários da spec possuem teste que existe e, onde mutado, falha sem a 
 | Entrega | Status |
 | --- | --- |
 | `docs/reviews/phase-3-documents-audit.md` | ✓ (este arquivo) |
-| ADR 0008 | parcial: contradiz a realidade em um ponto (F02) |
+| ADR 0008 | ✓ (F02 corrigido); resta uma linha obsoleta em "Fora de escopo" (R05) |
 | ADR 0009 | ✓ (descreve fielmente F01 e a política de exclusão) |
 | `docs/api/documents.md`, `workspaces.md`, README | ✓ conferidos contra o código e o OpenAPI gerado, salvo F07 |
 
@@ -183,7 +184,7 @@ Todos os nomes de teste citados pelo implementador **existem**. Coluna final: o 
 | PDF/TXT/MD válidos | `UP::test_owner_and_admin_can_upload` (parametrizado) | ok |
 | Tipo/conteúdo inválido | `UP::test_invalid_uploads_are_rejected_without_persisting`, `test_document_validation.py` | M15-M18, M24-M26 (M15 equivalente) |
 | >10 MiB rejeitado | `UP::test_over_limit_gets_413_...`, `test_exactly_limit_is_accepted`, `test_document_storage.py::test_over_limit_aborts_...` | M12, M13 mortas |
-| **>10 MiB declarado -> rejeição cedo** | `UP::test_declared_content_length_far_over_limit_is_rejected_early` | **não assere o que alega**: passa sem o guarda (M20 sobreviveu; F05) |
+| **>10 MiB declarado -> rejeição cedo** | `UP::test_declared_content_length_over_limit_never_reads_body` | (histórico: o teste original não assertava o que alegava, F05; corrigido e verificado na §10/§12) |
 | Falha ao salvar -> nenhuma linha | `UP::test_storage_failure_returns_500_and_no_row`, `test_document_storage.py::test_write_failure_leaves_no_temp` | M27 morta |
 | Falha ao persistir -> limpeza | `UP::test_db_failure_returns_500_and_removes_blob`, `test_commit_failure_...` | M14 morta |
 | Colisão sem sobrescrita | `UP::test_same_filename_twice_creates_distinct_blobs`, P3 | ok |
@@ -195,42 +196,48 @@ Todos os nomes de teste citados pelo implementador **existem**. Coluna final: o 
 
 Não coberto na primeira passada (superado): liberação de conexão do pool durante o upload e cancelamento durante `save()` agora têm testes (seções 10 e 11); concorrência de upload/delete continua sem teste.
 
-## 7. Riscos residuais (desenvolvimento local x produção)
+## 7. Riscos residuais (desenvolvimento local x produção) — atualizado no HEAD `800f71c`
 
-Tabela do owner, com a linha de conexão SQL atualizada pela minha verificação do F03 (seção 11):
+Tabela do owner, com as linhas atualizadas pela revalidação final (seção 12). As colunas de desenvolvimento e produção foram mantidas; a coluna "Status no HEAD" é nova.
 
-| Risco | Desenvolvimento local | Produção |
-| --- | --- | --- |
-| Spool multipart antes da autenticação | Aceitável com ressalva | Exige mitigação |
-| Ausência de cotas de arquivos/workspaces | Aceitável | Bloqueante |
-| Rate limiting ausente nos uploads | Aceitável | Bloqueante |
-| Conexão SQL durante I/O | Resolvido (verificado: `pool.checkedout() == 0` durante `save()` no engine real) | Resolvido; monitorar espera por lock (`FOR SHARE`) e pool |
-| Dependência de `request._receive` privado | Monitorar | Avaliar substituição |
-| Reconciliação sem agendador | Aceitável | Operacionalizar |
-| PDF validado apenas pelo cabeçalho | Aceitável na Fase 3 | Exige tratamento mais rigoroso conforme uso |
+| Risco | Desenvolvimento local | Produção | Status no HEAD (verificação, seção 12) |
+| --- | --- | --- | --- |
+| Spool multipart antes da autenticação | Aceitável com ressalva | Exige mitigação | **Reduzido.** Anônimo/JWT inválido: 401 sem ler byte (provado em ASGI e em uvicorn real). Resta usuário autenticado sem membership ou inativo (≤ ~10 MiB por requisição, limitado por rate limit e simultâneos) e a **fuga com `root_path`/mount (R01)**. Mitigação em produção: corrigir R01, limite de corpo no proxy |
+| Ausência de cotas de arquivos/workspaces | Aceitável | Bloqueante | **Atendido para o MVP** (cota 1000 docs/1 GiB por workspace, 10 workspaces por dono; pré-checagem + checagem autoritativa sob `FOR UPDATE`; mutações mortas). Em produção: valores a rever; contagem é O(documentos) por upload |
+| Rate limiting ausente nos uploads | Aceitável | Bloqueante | **Atendido para o MVP** (20/min e 2 simultâneos por usuário; 10 criações de workspace/hora). **Por processo e em memória**: com N workers o teto é N vezes maior e o reinício zera. Produção multi-worker: store compartilhado ou limite no proxy |
+| Conexão SQL durante I/O | Resolvido (verificado: `pool.checkedout() == 0` durante `save()` no engine real) | Resolvido; monitorar espera por lock (`FOR SHARE`/`FOR UPDATE` do workspace) e pool | **Resolvido**; esperas por lock limitadas a 5 s por `lock_timeout` local à transação (N02 verificado, sem vazamento para o pool) |
+| Dependência de `request._receive` privado | Monitorar | Avaliar substituição | **Resolvido** (G01): middleware ASGI puro, só API pública; nenhuma referência a `_receive` em `app/` |
+| Reconciliação sem agendador | Aceitável | Operacionalizar | Inalterado: sem CLI nem agendador |
+| PDF validado apenas pelo cabeçalho | Aceitável na Fase 3 | Exige tratamento mais rigoroso conforme uso | Inalterado |
+| Guarda de upload depende do path casar (`root_path`/mount) | Aceitável (a aplicação não define `root_path`) | Exige correção ou proibição de `--root-path`/mount | **Novo (R01)** |
 
-Nota: `_BoundedUploadRoute` reduz, mas não elimina, o consumo concorrente de disco por clientes anônimos (cada requisição pode gravar ~10 MiB antes do 401). A proteção em produção precisa combinar limite de corpo no proxy, limite de concorrência e cotas.
+Nota: o middleware elimina o spool anônimo, mas a proteção em produção ainda precisa combinar limite de corpo no proxy, limites compartilhados (ou no proxy) e cotas. Antes do `UploadGuardMiddleware` (histórico): `_BoundedUploadRoute` só reduzia o consumo, cada requisição anônima podia gravar ~10 MiB antes do 401.
 
-Outros residuais: 500 no upload não prova que o documento não existe (commit incerto, seção 11); enumeração de slug (F14) e ids numéricos públicos (F13); storage local sem criptografia em repouso, só POSIX e com hard links; residuais da Fase 2 (rate limit por processo, sem refresh/revogação, sem lockfile).
+Outros residuais: 500 no upload não prova que o documento não existe (commit incerto, seção 11); enumeração de slug (F14, aceita) e ids numéricos públicos (F13); storage local sem criptografia em repouso, só POSIX e com hard links; residuais da Fase 2 (rate limit por processo, sem refresh/revogação, sem lockfile); espaço de chaves do limitador limitado a 4096 por instância (R07).
 
-## 8. Itens que exigem revisão humana
+## 8. Itens que exigem revisão humana — atualizado
 
-- `.env.example` e `backend/.env.example`: **inspecionados manualmente pelo owner** (só a configuração de storage comentada foi adicionada, sem segredo real). Nada pendente.
-- Ambiente de produção: dono e permissões do diretório de documentos, backup que preserve a coerência linha/blob e política de retenção.
-- CI: os checks verdes dos PRs #2-#5 que li são de execuções anteriores aos commits de correção; rodar o CI após o push.
+- `.env.example` e `backend/.env.example`: **inspecionados manualmente pelo owner** (só a configuração de storage comentada foi adicionada, sem segredo real). Os novos nomes de configuração de F04 (`UPLOAD_*`, `WORKSPACE_*`) estão no README; **não li nenhum `.env*`** e não verifiquei se foram acrescentados aos exemplos (não é bloqueante: os padrões estão no código e no README).
+- Ambiente de produção: dono e permissões do diretório de documentos, backup que preserve a coerência linha/blob e política de retenção; limite de corpo no proxy; número de workers (limites por processo); não usar `--root-path`/mount enquanto R01 estiver aberto.
+- CI: **resolvido para o HEAD**: run `43302165607` (PR #6, head `800f71c`) com `test` e `unit` em **success**. Há um run antigo `43098202408` (2026-11-11) ainda em `queued`; ignorável, mas vale cancelar.
+- Higiene de ambiente local: `backend/.venv` não tem `python-multipart` (17 erros de coleção se usado); a suíte roda no `.venv` da raiz. Não afeta o CI.
 
-## 9. Decisões que precisam de aprovação explícita do dono
+## 9. Decisões do dono — estado no HEAD
 
-1. **204 quando o blob falha após o commit do delete** (documentado como política; o cliente não vê o órfão).
-2. **FKs `ON DELETE RESTRICT`** em `workspace_id` e `uploaded_by`: impedem apagar workspace/usuário com documentos; PATCH/DELETE de workspace futuros precisarão de fluxo explícito.
-3. **Política de slug**: `^[a-z0-9]+(?:-[a-z0-9]+)*$`, 3-63, sem normalização, único global, 409 que confirma existência (F14).
-4. **`metadata` JSONB público**: nada interno pode entrar nele; hoje sempre `{}`.
-5. **Leitura (listar/consultar) liberada a todos os papéis**, incluindo `viewer`, e exposição de `uploaded_by`/`owner_id` (F13).
-6. **Aceitar o F01 residual** (spool pré-autenticação limitado a ~10 MiB por requisição, sem limite de concorrência) para o estudo local.
-7. **Aceitar F04** (sem cota nem rate limit em workspaces/documentos).
-8. ~~Corrigir F03~~ — corrigido (seção 11). Novas decisões: manter a política de **commit incerto** (blob mantido, 500 sem garantia de ausência) e aceitar a exigência de hard links no filesystem.
+Aprovadas pelo owner em **2026-11-12** e registradas nos ADRs 0008/0009 (commit `dc07d36`, conferido):
 
-## 10. Revalidação 1 (commits `dd6d307`..`b691cd0`)
+1. **Aprovada:** 204 quando o blob falha após o commit do delete (ADR 0009, Política de exclusão).
+2. **Aprovada:** FKs `ON DELETE RESTRICT` em `workspace_id` e `uploaded_by` (ADR 0009).
+3. **Aprovada:** política de slug `^[a-z0-9]+(?:-[a-z0-9]+)*$`, 3-63, sem normalização, único global; 409 que confirma existência (F14 aceito) (ADR 0008).
+4. **Aprovada:** `metadata` JSONB público; nada interno pode entrar nele (ADR 0009).
+5. **Aprovada:** leitura liberada a todos os papéis, incluindo `viewer` (ADR 0008). A exposição de `uploaded_by`/`owner_id` (F13) não é citada nominalmente.
+6. **F04 aprovado para o MVP** (ADR 0008 e 0009: "aprovado pelo owner para o MVP"): cotas, rate limit e teto de simultâneos, com a ressalva "em memória, por processo".
+7. **F01 residual** (spool de autenticado sem membership): descrito no ADR 0009 como ressalva e limitado por F04; **não há aprovação nominal registrada**. Recomendo registrar.
+8. **Sem aprovação registrada** (documentadas no ADR 0009): política de **commit incerto** (blob mantido, 500 sem garantia de ausência), exigência de **hard links** no filesystem, "POSIX only".
+
+O que resta para **produção** (nenhum item bloqueia o merge da fase): corrigir R01; limite de corpo no proxy; store compartilhado ou limites no proxy se houver mais de um worker; agendar/operacionalizar a reconciliação; validação mais profunda de PDF conforme uso; registrar a aceitação de F01 residual e dos itens do ponto 8; decidir F10-F13; residuais da Fase 2; testes R02/R03 (baixo custo).
+
+## 10. Revalidação 1 (commits `dd6d307`..`b691cd0`) — histórico
 
 Escopo: reauditoria independente das correções de F01, F02, F05, F06, F07, F08 e F09. Nenhum código, teste ou ADR foi alterado por mim; as mutações abaixo foram aplicadas e revertidas com `git checkout` (`git status` limpo).
 
@@ -276,11 +283,11 @@ Não encontrei regressão funcional: suíte completa verde, comportamento antigo
 | G04 | Informativo | `_run_to_completion`: se a thread falhar depois de cancelada, o `CancelledError` prevalece e a exceção da thread pode ser registrada como "never retrieved"; sem impacto funcional. Um blob já publicado antes do cancelamento não é removido (vira órfão recuperável pela reconciliação; ADR 0009 cobre) |
 | G05 | Informativo | O colapso de espaços altera nomes com espaços internos repetidos (`a  b.txt` -> `a b.txt`); intencional e documentado nos testes |
 
-### 10.5 Veredito atualizado
+### 10.5 Veredito atualizado (histórico, superado pela seção 12)
 
 **Aprovada com ressalvas, mais próxima do merge.** Nenhum achado Crítico ou Alto novo; F01 caiu de Alto para **Parcial/Médio** (spool limitado a ~10 MiB por requisição). Bloqueantes para o merge da fase: **nenhum** de código. Pendências que o owner deve aprovar explicitamente: F01 residual (spool pré-autenticação sem limite de concorrência), F03, F04 e as decisões da seção 9. Recomendo, antes de enviar: executar o CI nos commits de correção e considerar G01/G03. (Superado pela seção 11.) Para exposição pública continuam bloqueantes F04 e G02, mais os residuais da Fase 2.
 
-## 11. Revalidação 2 (commits `c97452c`, `54b72dd`, `2d50aeb`, `4848aa6`)
+## 11. Revalidação 2 (commits `c97452c`, `54b72dd`, `2d50aeb`, `4848aa6`) — histórico
 
 Mesmas regras: nenhum código, teste ou ADR alterado por mim; mutações revertidas (`git status` limpo).
 
@@ -323,6 +330,66 @@ Mesmas regras: nenhum código, teste ou ADR alterado por mim; mutações reverti
 | N04 | Informativo | O `commit()` antecipado confirma qualquer escrita pendente na sessão do chamador; seguro hoje. | `services/document.py:64` | Comentário/teste que garanta dependencies de auth somente leitura |
 | N05 | Informativo | Commit incerto e `.part` residual mantêm bytes em disco até a reconciliação manual (sem agendador); um 500 no upload não prova que o documento não existe, e o cliente que repete a requisição pode duplicar. | `services/document.py:113-129`; ADR 0009 | Operacionalizar a reconciliação (tabela de riscos); documentado no ADR |
 
-### 11.5 Veredito atualizado
+### 11.5 Veredito atualizado (histórico, superado pela seção 12)
 
 **Aprovada com ressalvas.** As três correções pedidas pelo owner estão implementadas, testadas e verificadas por mutação (as sobreviventes são lacunas de teste, N02/N03, não falhas de comportamento). Nenhum achado Crítico ou Alto. Nenhum bloqueante para o merge da fase; recomendo tratar N01 (camadas) antes ou logo depois do merge, e N02/N03 como testes pequenos. Para exposição pública continuam bloqueantes: cotas, rate limit/limite de concorrência de uploads e mitigação do spool pré-autenticação (seção 7). CI ainda precisa rodar sobre estes commits após o push.
+
+## 12. Revalidação 3 — final (commits `ec71964`..`800f71c`, HEAD `800f71c`)
+
+Mesmas regras: nenhum código, teste ou ADR alterado por mim. Mutações e testes de sondagem foram aplicados e revertidos/removidos (`git status` limpo; scripts só no scratchpad). Probes: ASGI direto contra o app real, **uvicorn real** (`curl`, corpos de 5 MiB e 30 MiB), PostgreSQL real (`nexus_ai_test`) com pool de 1 conexão e com carga concorrente. Commits cobertos: `ec71964` (N01), `37b1aad` (N02), `b70016a` (N03), `2b5e7af` (middleware ASGI), `dc07d36` (docs/aprovações), `d41d936`, `56388ea`, `51e4aa6`, `e351455`, `800f71c` (F04).
+
+### 12.1 Validação (HEAD `800f71c`)
+
+| Comando | Resultado |
+| --- | --- |
+| `ruff check .` / `ruff format --check .` (raiz do repositório) | `All checks passed!` / `155 files already formatted` |
+| `POSTGRES_PORT=1 POSTGRES_DB=nexus_ai_test pytest -m "not integration" -q` | **325 passed**, 221 deselected, 1 warning |
+| `POSTGRES_DB=nexus_ai_test pytest -q` | **546 passed**, 1 warning |
+| `POSTGRES_DB=nexus_ai_test alembic check` | `No new upgrade operations detected.` |
+| `gh run list --branch feat/phase3-e-hardening-audit` / `gh pr checks 6` | run `43302165607`, head `800f71c`: `test` (51 s) e `unit` (25 s) **success**. Run antigo `43098202408` (2026-11-11) preso em `queued` |
+
+Observação de ambiente: usei o `.venv` da raiz; o `backend/.venv` não tem `python-multipart` e falha na coleção. A suíte completa foi rodada no estado limpo (sem meus arquivos de sondagem) e **depois** de uma limpeza de linhas que um probe meu interrompido deixou no banco de teste (removidas; afetou só execuções intermediárias, refeitas).
+
+### 12.2 Status por item
+
+| Item | Status | Evidência |
+| --- | --- | --- |
+| **N01** módulo de permissões + exceções de domínio | **Corrigido** (nuance R04) | `app/core/permissions.py` neutro; `DocumentService` levanta `WorkspaceNotFoundError`/`PermissionDeniedError`. `grep` em `app/services`, `repositories`, `core`, `storage`, `models`, `schemas`: **nenhum** `import app.api` nem `HTTPException`; resta `from fastapi import UploadFile` em `services/document.py:16` (tipo do upload, sem semântica HTTP; R04). Importação isolada de 9 módulos (`app.main`, serviços, dependencies, handlers, `permissions`, `upload_guard`, repositórios) sem ciclo. **Respostas idênticas em bytes**: sondagem com pool de 1 conexão comparou o 404 do serviço (membership removida durante o I/O) com o 404 da dependency, e o 403 do serviço (papel rebaixado durante o I/O) com o da dependency: mesmo status, corpo (`{"detail":"Workspace não encontrado."}` / `{"detail":"Permissão insuficiente."}`) e cabeçalhos (exceto `x-request-id`). Mutações: serviço importando `app.api.*` e serviço importando `HTTPException` mortas por `test_services_do_not_import_api_layer_or_http_exception` |
+| **N02** `lock_timeout` | **Corrigido** (lacuna de teste R03) | `set_config('lock_timeout', '5000ms', true)` (`services/document.py:98-104`, local à transação) executa **antes** do `FOR SHARE` da membership **e** do `FOR UPDATE` do workspace (o mesmo valor vale para os dois). Sondagem no engine real com `pool_size=1`: depois de upload com sucesso, cota negada, 404/403 do serviço, criação de workspace e timeout, `SHOW lock_timeout` na mesma conexão do pool = `0` (**sem vazamento**). Timeout do `FOR UPDATE` do workspace (200 ms, linha bloqueada por outra sessão): 500 genérico, **0 blobs novos** (arquivos == linhas), rollback ok. Mutação de remover o `set_config` (N02b): morta. **Mutações `is_local=False` no upload (N02a) e no `UserRepository.lock_for_update` (N02c) sobrevivem**: nenhum teste prova a localidade (R03) |
+| **N03** teste do desfazimento do link | **Válido** | `test_shard_fsync_failure_undoes_link_and_keeps_existing_blob` (`tests/test_document_storage.py:294`) força `fsync` de diretório a falhar. Mutações: sem o `unlink` do link novo (N03a) e `unlink` do nome errado (N03b): **ambas mortas**. Q11 da seção 11 deixou de sobreviver |
+| **Middleware: casamento de path** | **Falha em `root_path`/mount (R01)**; demais casos ok | Regex `^/api/v1/workspaces/[^/]+/documents$` sobre `scope["path"]` (`upload_guard.py:53,120`). ASGI direto (corpo de 40 x 64 KiB): barra final -> 307 (o cliente repete no path guardado); `//api/...`, caixa diferente, `%2F` decodificado, `./` -> 404 (a rota também não casa); `HEAD`/`OPTIONS` -> 405 sem ler corpo; query string não faz parte de `scope["path"]`; id não numérico ou gigante entra no guarda (401 sem ler). **`root_path="/gw"` com `path="/gw/api/v1/..."` (como o uvicorn monta com `--root-path`, `h11_impl.py:206`; e como um `Mount` mantém o path completo) NÃO casa**: o guarda é ignorado e o Starlette roteia normalmente (`get_route_path` remove o prefixo). Medido com o app real e JWT válido: corpo de 25 MiB **inteiro consumido** (26 214 505 bytes) contra 10 551 392 com o guarda; também ficam sem efeito o rate limit e o teto de simultâneos |
+| **Middleware: paridade de JWT** | **Idêntico** | `authenticate_bearer` usa a mesma `decode_access_token` e `get_authorization_scheme_param`. Comparei 19 formas de cabeçalho com `HTTPBearer` + `decode_access_token`: `bearer`/`BEARER`/dois espaços ok nos dois; sem credencial, `Basic`, tabulação, texto extra, vazio, `alg=none`, HS512, expirado, `nbf` futuro, `aud` errado, `token_type` errado, `sub` não string, lixo, espaço inicial, não ASCII rejeitados nos dois; cabeçalhos `Authorization` duplicados: ambos usam o primeiro. O 401 do guarda tem o mesmo corpo e `WWW-Authenticate: Bearer`; usuário inativo/inexistente (JWT válido) passa pelo guarda e leva 401 na dependency |
+| **Middleware: corpo nunca lido antes de 401/429** | **Provado** | ASGI com o app real: anônimo, JWT inválido e 429 por rate limit consumiram **0 bytes** de `receive`. **uvicorn real**: anônimo e token ruim com 5 MiB -> 401 com `size_upload=0`; 2ª requisição do mesmo usuário (limite 1/min) -> 429 `Retry-After: 60` com `size_upload=0`; cabeçalho `x-request-id` presente nas respostas antecipadas (conferido em 413 e 429 reais). JWT válido de usuário inexistente: o guarda deixa passar e a dependency recusa **depois** de ler (5 242 985 bytes): residual documentado |
+| **Middleware: corpo limitado** | **Ok** | `Content-Length` declarado de 1e9 -> 413 com 0 bytes lidos; chunked de 25 MiB -> 413 com 10 551 392 bytes (teto + folga + um bloco); `Content-Length: 100` falso com corpo de 25 MiB -> 413 com os mesmos 10 551 392; no uvicorn real, chunked de 30 MiB -> 413 após ~14 MB enviados (buffers de socket). `http.disconnect` no meio do corpo: resposta 400 descartada e vaga liberada. Sem resposta dupla (mutação sem o descarte do 400 do FastAPI morta; mutação do teto x10 e do guarda de `Content-Length` mortas). Mensagens sem `body` e `more_body` tratados. Exceção do app: relançada se não for o estouro; engolida só quando o estouro causou o erro. Sem arquivo temporário residual em `/tmp` depois dos probes |
+| **Middleware: ordem com `RequestContextMiddleware`** | **Ok** | `add_middleware(UploadGuardMiddleware)` primeiro, `RequestContextMiddleware` depois: o contexto fica por fora, então as respostas antecipadas (401/413/429) levam `X-Request-ID` (visto em 413/429 reais). Exceções não tratadas passam pelo guarda e viram 500 do `RequestContextMiddleware` |
+| **F04: limitador** | **Correto** | `SlidingWindowLimiter` com instâncias separadas (`upload_limiter`, `workspace_create_limiter`, `limiter`); chave por usuário (`upload:user:{id}`, `workspace-create:user:{id}`); só registra o evento quando permitido; `Retry-After >= 1`. Mutações: chave compartilhada (upload, simultâneos, criação), janela minúscula (upload, criação), rate limit desligado, sem rejeição, `Retry-After` 0: **todas mortas**. Defeitos: R02, R06, R07 |
+| **F04: vaga de simultâneos liberada exatamente uma vez** | **Ok** | Adquirida só no caminho que não faz retorno antecipado; liberada no `finally`. Provado com o app real e o banco: sucesso, desconexão no meio do corpo, cancelamento de duas requisições e 429 do terceiro (sem leitura do corpo) terminam com `active == 0`. Mutações sem liberar e liberando duas vezes: mortas |
+| **F04: cota por workspace** | **Correta** | Pré-checagem antes do I/O (sem blob) e checagem autoritativa sob `FOR UPDATE` do workspace dentro do mesmo `lock_timeout`; `count + 1 > máx` e `used + size > máx` (exatamente no limite é aceito). Mutações: sem `FOR UPDATE` (corrida) morta por `test_race_on_document_count_only_one_fits`; sem pré-checagem, `count` off-by-one e bytes sem `size`: mortas. A contagem vem das linhas, então **exclusão libera cota** (estrutural; não há teste dedicado, R06). Blobs órfãos não contam (reconciliação) |
+| **F04: ordem de locks e deadlock** | **Sem deadlock encontrado** | Upload: membership `FOR SHARE` -> workspace `FOR UPDATE` -> `INSERT` (`KEY SHARE` em `workspaces`/`users`). Delete de documento: só a linha do documento, sem lock do workspace. Criação de workspace: usuário `FOR UPDATE` -> `INSERT` em linhas novas. Nenhum caminho adquire os locks em ordem inversa; criação espera, no máximo, o commit de uploads em andamento do mesmo usuário. Estresse (60 uploads de 2 usuários, alternância de papel, 60 exclusões e 6 criações de workspace simultâneos, banco real): 0 respostas 500, sem travamento |
+| **F04: teto de workspaces por dono** | **Correto** | `FOR UPDATE` na linha do usuário antes de contar; criações concorrentes do mesmo usuário se serializam (`test_concurrent_creations_cannot_exceed_owned_limit`). Mutações sem o lock e com off-by-one: mortas |
+| **F04: 401 antes de 429 em `POST /workspaces`** | **Ok** | `workspace_create_rate_limit` depende de `get_current_user`; `test_rate_limit_runs_after_authentication`. No upload, JWT inválido não consome o limite (`test_invalid_jwt_does_not_consume_rate_limit`) |
+| **F04: chaves de desligamento e isolamento de testes** | **Ok, com lacuna R02** | `conftest.py` desliga tudo por variável de ambiente e zera os 4 limitadores antes/depois de cada teste; os testes de F04 religam explicitamente. Isso **mascara os padrões**: virar `upload_limits_enabled`, `workspace_create_rate_limit_enabled`, `workspace_max_documents` ou `upload_max_concurrent_per_user` do padrão seguro para desligado/enorme **sobrevive à suíte inteira** (R02). Teto de simultâneos ignorando a chave de desligamento também sobrevive (R06) |
+| **Aviso "por processo"** | **Documentado** | ADR 0008, ADR 0009, `docs/api/documents.md`, `docs/api/workspaces.md`, README e docstring do `upload_guard.py` |
+| **Docs** | **Fiéis, com 2 defeitos (R05)** | README, `docs/api/*` e as tabelas de padrões do ADR 0009 conferem com `config.py` e os handlers (413 de cota, 429, 403 de limite, `Retry-After`). Aprovações do owner de 2026-11-12 registradas (seção 9). Defeitos: linha obsoleta em ADR 0008 "Fora de escopo" e período emendado de forma truncada no ADR 0009 (bullet TOCTOU) |
+| **Regressões** | **Nenhuma** | Suíte completa verde; comportamento anterior de 413/401/404/403 preservado; tamanho exato no limite ainda aceito |
+
+### 12.3 Resultado das mutações desta rodada
+
+Mortas (por suíte focada em upload, quota, limites, conexão, storage, layering e API): N01 (2), N02b, N03 (2), vaga sem liberar, vaga liberada duas vezes, sem `FOR UPDATE` do workspace, sem pré-checagem, sem `FOR UPDATE` do usuário, `count` off-by-one, bytes sem `size`, chave compartilhada (rate, simultâneos, criação), teto de corpo x10, sem 401 no guarda, sem rate limit, sem descarte do 400, sem guarda de `Content-Length`, janelas minúsculas (upload, criação), `Retry-After` 0, rate de criação sem rejeição, off-by-one do teto de workspaces. **Sobreviveram**: N02a (`is_local=False` no upload) e N02c (idem no usuário) (R03); padrões de configuração invertidos (R02); teto de simultâneos ignorando a chave de desligamento (R06).
+
+### 12.4 Novos achados
+
+| ID | Severidade | Achado | Evidência | Correção recomendada |
+| --- | --- | --- | --- | --- |
+| R01 | **Médio (condicional)** | O guarda casa o path em `scope["path"]`, não no path de rota. Com `root_path` (uvicorn `--root-path`, ASGI >= 2.4) ou app montado sob `Mount`, `scope["path"]` inclui o prefixo, o regex não casa e o guarda **falha aberto** em silêncio: sem checagem de JWT, sem teto de corpo, sem rate limit, sem teto de simultâneos (volta o F01/G02). A aplicação hoje não define `root_path` e nada no repositório usa `--root-path`; sem teste nem aviso na documentação | `backend/app/api/upload_guard.py:53,120`; probe: 25 MiB consumidos por inteiro com `root_path="/gw"` contra 10,5 MiB sem prefixo; `uvicorn/protocols/http/h11_impl.py:206`; `starlette/_utils.py:137` (`get_route_path`) | Casar no path sem o `root_path` (`scope["path"].removeprefix(scope.get("root_path", ""))`, ou aceitar prefixo opcional) e adicionar teste com `root_path`/`Mount`; até lá, documentar "não usar `--root-path`/mount" |
+| R02 | Baixo | Os **padrões** de F04 não são testados: o `conftest.py` força `UPLOAD_LIMITS_ENABLED=false` e `WORKSPACE_CREATE_RATE_LIMIT_ENABLED=false` no ambiente e nenhum teste lê os valores padrão. Trocar para `False`, `1_000_000_000` ou `1000` simultâneos sobrevive à suíte; um commit assim desligaria F04 sem aviso | `backend/app/core/config.py:131-140`; `backend/tests/conftest.py:26-28` | Teste de `Settings(_env_file=None)` com o ambiente limpo, assertando `True`/20/2/1000/1 GiB/10/`True`/10 |
+| R03 | Baixo | Nenhum teste prova que o `lock_timeout` é local à transação: `set_config(..., False)` vazaria 5 s para a conexão do pool e sobrevive à suíte. O comportamento atual está correto (sondagem) | `backend/app/services/document.py:98-104`; `backend/app/repositories/user.py:202-204` | Teste com `pool_size=1`: após um upload/criação, `SHOW lock_timeout` na mesma conexão == `0` |
+| R04 | Informativo | `services/document.py` ainda importa `fastapi.UploadFile`; o teste de camadas só proíbe `app.api` e `HTTPException`, então um `Response`/`Request` do FastAPI passaria. Não há semântica HTTP no serviço hoje | `backend/app/services/document.py:16`; `backend/tests/unit/test_service_layering.py:19-28` | Opcional: receber um leitor assíncrono (`read`) em vez de `UploadFile`, ou ampliar o teste para `fastapi`/`starlette` com exceção explícita |
+| R05 | Informativo | Documentação: (a) ADR 0008, "Fora de escopo", ainda diz que rate limit nas rotas de workspace e documentos está adiado, contradizendo a seção "Limites de criação" do mesmo ADR; (b) ADR 0009, bullet TOCTOU: a oração sobre `lock_timeout` foi emendada no meio da frase anterior e "(a revogação não confirma entre a leitura e o commit)" ficou fora de lugar | `docs/decisions/0008-workspace-bootstrap-and-authorization.md:45`; `docs/decisions/0009-document-local-storage.md` (bullet "TOCTOU da autorização") | Remover/atualizar a linha; reescrever o período |
+| R06 | Informativo | Lacunas pequenas: (a) o teto de simultâneos ignora `UPLOAD_LIMITS_ENABLED=false` sem que algum teste note (mutação sobrevive); (b) "exclusão libera cota" é afirmado no ADR, mas sem teste; (c) `scope["state"]["upload_user_id"]` é gravado e nunca lido, e o parâmetro `scope` de `enforce_upload_rate_limit` não é usado; (d) timeout do `FOR UPDATE` do workspace é registrado com `stage=database`, não `membership_lock` | `backend/app/api/upload_guard.py:91,134,136`; `backend/app/services/document.py:108-119` | Testes/limpeza opcionais |
+| R07 | Informativo | O limitador recusa chave **nova** quando há 4096 chaves ativas (`_max_keys`); com janela de 3600 s em `workspace_create_limiter`, 4096 usuários distintos criando workspace em uma hora fariam novos usuários receberem 429 até a janela expirar (exige 4096 contas; por processo; registra warning) | `backend/app/core/rate_limit.py:340-346`; `backend/app/api/dependencies/rate_limit.py:479` | Aceitável no MVP; monitorar o log e mover para store compartilhado/proxy em produção |
+| R08 | Informativo | `FOR UPDATE` na linha de `users` é o lock mais forte e conflita com o `FOR KEY SHARE` de FK de uploads em andamento do mesmo usuário; `FOR NO KEY UPDATE` bastaria. Efeito: criar workspace pode esperar até o commit (curto) de um upload do mesmo usuário e, passados 5 s, falha com 500 genérico. Sem deadlock (estresse) | `backend/app/repositories/user.py:206` | Opcional: `with_for_update(key_share=True)` |
+
+### 12.5 Veredito final
+
+**Aprovada com ressalvas; nada bloqueia o merge da Fase 3 (escopo MVP/estudo local).** N01, N02, N03, G01 e F04 estão corrigidos e verificados por mutação e por execução real; F01 caiu para residual (autenticado sem membership/inativo, mais R01 sob `root_path`/mount). Nenhum Crítico ou Alto. Recomendo, no mesmo PR ou imediatamente depois, a correção de R01 (poucas linhas) e os testes R02/R03; R04-R08 são opcionais. Para produção: limite de corpo no proxy, limites compartilhados ou no proxy com vários workers, reconciliação operacionalizada, e as pendências listadas na seção 9.
