@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.workspace import Workspace
@@ -14,6 +14,25 @@ class WorkspaceRepository:
         statement = select(Workspace).where(Workspace.id == workspace_id)
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def lock_for_update(self, workspace_id: int) -> bool:
+        # FOR NO KEY UPDATE: serializa as escritas de cota sem conflitar com o
+        # KEY SHARE das FKs de INSERTs. Vale até o commit/rollback do
+        # chamador. False se o workspace não existe mais.
+        found = await self.session.scalar(
+            select(Workspace.id)
+            .where(Workspace.id == workspace_id)
+            .with_for_update(key_share=True)
+        )
+        return found is not None
+
+    async def count_owned_by(self, user_id: int) -> int:
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(Workspace)
+            .where(Workspace.owner_id == user_id)
+        )
+        return int(total or 0)
 
     async def get_by_slug(self, slug: str) -> Workspace | None:
         statement = select(Workspace).where(Workspace.slug == slug)

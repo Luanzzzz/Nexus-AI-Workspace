@@ -4,6 +4,7 @@ Cada teste roda numa transação externa revertida no fim (nexus_ai_test) e com
 storage em tmp_path: nada fica no banco nem no diretório real.
 """
 
+import time
 from collections.abc import AsyncIterator
 from uuid import uuid4
 
@@ -11,10 +12,13 @@ import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.database import get_db
 from app.api.dependencies.documents import get_document_storage
+from app.api.exception_handlers import DOCUMENT_TOO_LARGE_DETAIL
+from app.api.upload_guard import MULTIPART_OVERHEAD as _MULTIPART_OVERHEAD
 from app.core.tokens import create_access_token
 from app.db.session import engine
 from app.main import app
@@ -25,6 +29,8 @@ from app.repositories.document import DocumentRepository
 from app.repositories.user import UserRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.repositories.workspace_member import WorkspaceMemberRepository
+from app.services.document import DocumentService
+from app.services.document_reconciliation import find_orphan_blobs, reconcile_orphans
 from app.services.document_validation import MAX_UPLOAD_BYTES
 from app.storage.local import LocalDocumentStorage
 
@@ -279,6 +285,198 @@ async def test_declared_content_length_far_over_limit_is_rejected_early(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_declared_content_length_over_limit_never_reads_body(
+    client, session, storage_root, monkeypatch
+):
+    """Sem o guarda de Content-Length o corpo seria lido: aqui ele não é tocado."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    calls: list[str] = []
+
+    async def spy_upload(self, **kwargs):
+        calls.append("upload")
+        raise AssertionError("handler não deveria rodar")
+
+    monkeypatch.setattr(DocumentService, "upload_document", spy_upload)
+    pulled = 0
+
+    async def body():
+        nonlocal pulled
+        pulled += 1
+        yield b"x"
+
+    headers = {
+        **_auth(owner),
+        "Content-Type": "multipart/form-data; boundary=b",
+        "Content-Length": str(MAX_UPLOAD_BYTES + 10 * 1024 * 1024),
+    }
+    response = await client.post(_url(workspace.id), content=body(), headers=headers)
+
+    assert response.status_code == 413
+    assert pulled == 0
+    assert calls == []
+    assert _blobs(storage_root) == []
+
+
+_CHUNK = b"a" * 65536
+_PREAMBLE = (
+    b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    b"Content-Type: text/plain\r\n\r\n"
+)
+_MULTIPART = {"Content-Type": "multipart/form-data; boundary=b"}
+
+
+class _CountingBody:
+    """Corpo chunked (sem Content-Length) que registra quanto foi puxado."""
+
+    def __init__(self, total: int = 200 * 1024 * 1024) -> None:
+        self.total = total
+        self.chunks = 0
+        self.consumed = 0
+
+    async def __aiter__(self):
+        self.chunks += 1
+        self.consumed += len(_PREAMBLE)
+        yield _PREAMBLE
+        while self.consumed < self.total:
+            self.chunks += 1
+            self.consumed += len(_CHUNK)
+            yield _CHUNK
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_chunked_body_far_over_limit_is_aborted_with_413(
+    client, session, storage_root
+):
+    """Autenticado, sem Content-Length: a leitura para no teto + um bloco."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    body = _CountingBody()
+
+    response = await client.post(
+        _url(workspace.id), content=body, headers={**_auth(owner), **_MULTIPART}
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": DOCUMENT_TOO_LARGE_DETAIL}
+    assert body.consumed <= MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD + len(_CHUNK)
+    assert body.consumed < body.total
+    assert _blobs(storage_root) == []
+    assert await _count(session) == 0
+
+
+def _expired_token(user_id: int) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return create_access_token(user_id, now=datetime.now(UTC) - timedelta(days=3))
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header",
+    [
+        None,
+        "Bearer",
+        "Bearer ",
+        "Basic abc",
+        "Bearer not-a-jwt",
+        "Bearer " + create_access_token(1)[:-4] + "AAAA",
+        "EXPIRED",
+    ],
+)
+async def test_anonymous_or_invalid_jwt_gets_401_without_reading_body(
+    client, session, storage_root, header
+):
+    """JWT inválido é recusado ANTES de qualquer byte do corpo: nada é puxado."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    body = _CountingBody()
+    headers = dict(_MULTIPART)
+    if header == "EXPIRED":
+        headers["Authorization"] = f"Bearer {_expired_token(owner.id)}"
+    elif header is not None:
+        headers["Authorization"] = header
+
+    response = await client.post(_url(workspace.id), content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Não autenticado."}
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert "x-request-id" in response.headers
+    assert body.chunks == 0
+    assert body.consumed == 0
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_invalid_jwt_401_matches_get_current_user_response(client, session):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    headers = {"Authorization": "Bearer lixo"}
+
+    guarded = await client.post(
+        _url(workspace.id), files={"file": ("a.txt", b"x")}, headers=headers
+    )
+    via_dependency = await client.get(_url(workspace.id), headers=headers)
+
+    assert guarded.status_code == via_dependency.status_code == 401
+    assert guarded.json() == via_dependency.json()
+    assert (
+        guarded.headers["WWW-Authenticate"]
+        == via_dependency.headers["WWW-Authenticate"]
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_valid_jwt_for_inactive_or_missing_user_still_checked_in_db(
+    client, session, storage_root
+):
+    """O guarda não substitui o banco: usuário removido continua dando 401."""
+    ghost_token = create_access_token(2147483000)
+    response = await client.post(
+        "/api/v1/workspaces/1/documents",
+        files={"file": ("a.txt", b"x")},
+        headers={"Authorization": f"Bearer {ghost_token}"},
+    )
+    assert response.status_code == 401
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "expected"),
+    [
+        ("POST", "/api/v1/workspaces/1/documents/2", 405),
+        ("POST", "/api/v1/workspaces/1/documentsX", 404),
+        ("POST", "/api/v1/workspaces/1/documents/", 307),
+        ("PUT", "/api/v1/workspaces/1/documents", 405),
+        ("GET", "/api/v1/workspaces/1/documents", 401),
+        ("POST", "/api/v1/workspaces", 422),
+        ("POST", "/api/v1/auth/login", 422),
+    ],
+)
+async def test_guard_does_not_touch_other_routes(client, method, path, expected):
+    """Rotas parecidas: sem 401/413 do guarda e com o corpo grande declarado."""
+    body = _CountingBody(total=1024)
+    response = await client.request(
+        method,
+        path,
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_UPLOAD_BYTES + 10 * 1024 * 1024),
+        },
+    )
+    assert response.status_code == expected, response.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "data", "ctype", "status"),
     [
@@ -340,21 +538,92 @@ async def test_db_failure_returns_500_and_removes_blob(
     assert await _count(session) == before
 
 
+def _fail_second_commit(session, monkeypatch, *, really_commit: bool):
+    """A 1ª chamada (fim da transação de leitura) passa; a 2ª (commit da linha)
+    falha, antes ou depois de confirmar de verdade."""
+    real_commit = session.commit
+    calls = 0
+
+    async def commit():
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            await real_commit()
+            return
+        if really_commit:
+            await real_commit()
+        raise OperationalError("COMMIT", None, Exception("conexao caiu"))
+
+    monkeypatch.setattr(session, "commit", commit)
+    return real_commit
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_commit_failure_returns_500_and_removes_blob(
+async def test_commit_succeeded_then_connection_error_keeps_blob_and_row(
+    client, session, storage_root, monkeypatch, caplog
+):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    real_commit = _fail_second_commit(session, monkeypatch, really_commit=True)
+    with caplog.at_level("ERROR"):
+        response = await _upload(
+            client, owner, workspace.id, "segredo.txt", b"conteudo"
+        )
+    monkeypatch.setattr(session, "commit", real_commit)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Erro interno do servidor."}
+    blobs = _blobs(storage_root)
+    assert len(blobs) == 1
+    assert blobs[0].read_bytes() == b"conteudo"
+    assert await _count(session) == 1
+    key = await session.scalar(select(Document.storage_key))
+    assert blobs[0].name == key
+    assert "stage=commit_uncertain" in caplog.text
+    assert "OperationalError" in caplog.text
+    assert key not in caplog.text
+    assert "segredo" not in caplog.text
+    assert str(storage_root) not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_commit_failure_without_commit_keeps_blob_for_reconciliation(
     client, session, storage_root, monkeypatch
 ):
     owner = await _user(session)
     workspace = await _workspace(session, owner)
-    real_commit = session.commit
-
-    async def failing_commit():
-        raise RuntimeError("commit falhou")
-
-    monkeypatch.setattr(session, "commit", failing_commit)
+    real_commit = _fail_second_commit(session, monkeypatch, really_commit=False)
     response = await _upload(client, owner, workspace.id, "a.txt", b"conteudo")
     monkeypatch.setattr(session, "commit", real_commit)
+
+    assert response.status_code == 500
+    assert await _count(session) == 0
+    blobs = _blobs(storage_root)
+    assert len(blobs) == 1  # incerto: o blob não é apagado
+
+    storage = LocalDocumentStorage(storage_root)
+    future = time.time() + 7200
+    assert await find_orphan_blobs(session, storage, now=future) == [blobs[0].name]
+    report = await reconcile_orphans(session, storage, dry_run=False, now=future)
+    assert report.removed_blobs == 1
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_failure_before_commit_removes_blob(
+    client, session, storage_root, monkeypatch
+):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+
+    async def failing_create(self, **kwargs):
+        raise RuntimeError("flush falhou")
+
+    monkeypatch.setattr(DocumentRepository, "create", failing_create)
+    response = await _upload(client, owner, workspace.id, "a.txt", b"conteudo")
 
     assert response.status_code == 500
     assert _blobs(storage_root) == []

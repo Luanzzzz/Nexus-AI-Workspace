@@ -186,3 +186,42 @@ def test_settings_rejects_star_trusted_proxies(monkeypatch, value):
         Settings(_env_file=None)
 
     assert "TRUSTED_PROXIES não pode ser *" in str(exc_info.value)
+
+
+_PHASE3_LIMIT_ENV = (
+    "UPLOAD_LIMITS_ENABLED",
+    "UPLOAD_RATE_LIMIT_PER_MINUTE",
+    "UPLOAD_MAX_CONCURRENT_PER_USER",
+    "WORKSPACE_MAX_DOCUMENTS",
+    "WORKSPACE_MAX_STORAGE_BYTES",
+    "WORKSPACE_MAX_OWNED_PER_USER",
+    "WORKSPACE_CREATE_RATE_LIMIT_ENABLED",
+    "WORKSPACE_CREATE_RATE_LIMIT_PER_HOUR",
+)
+
+
+def test_phase3_limits_have_secure_defaults(monkeypatch):
+    # O conftest desliga os limites por variável de ambiente; aqui elas saem e
+    # o .env do desenvolvedor não é lido (_env_file=None): só valem os padrões.
+    for name in _PHASE3_LIMIT_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("JWT_SECRET_KEY", _strong_secret())
+
+    defaults = Settings(_env_file=None)
+
+    assert defaults.upload_limits_enabled is True
+    assert defaults.upload_rate_limit_per_minute == 20
+    assert defaults.upload_max_concurrent_per_user == 2
+    assert defaults.workspace_max_documents == 1000
+    assert defaults.workspace_max_storage_bytes == 1_073_741_824
+    assert defaults.workspace_max_owned_per_user == 10
+    assert defaults.workspace_create_rate_limit_enabled is True
+    assert defaults.workspace_create_rate_limit_per_hour == 10
+
+
+def test_lock_timeout_constants_are_pinned():
+    from app.services.document import MEMBERSHIP_LOCK_TIMEOUT_MS
+    from app.services.workspace import OWNER_LOCK_TIMEOUT_MS
+
+    assert MEMBERSHIP_LOCK_TIMEOUT_MS == 5000
+    assert OWNER_LOCK_TIMEOUT_MS == 5000

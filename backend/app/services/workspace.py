@@ -9,9 +9,11 @@ from psycopg.errors import UniqueViolation
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import DuplicateSlugError
+from app.core.config import settings
+from app.core.exceptions import DuplicateSlugError, WorkspaceLimitExceededError
 from app.models.user import User
 from app.models.workspace import Workspace
+from app.repositories.user import UserRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.repositories.workspace_member import WorkspaceMemberRepository
 from app.schemas.workspace import WorkspaceCreate
@@ -19,6 +21,8 @@ from app.schemas.workspace import WorkspaceCreate
 # Nome que o PostgreSQL deu ao UNIQUE(slug) na migration.
 _SLUG_UNIQUE_CONSTRAINT = "workspaces_slug_key"
 OWNER_ROLE = "owner"
+# Teto de espera pelo FOR NO KEY UPDATE da linha do usuário (limite de workspaces).
+OWNER_LOCK_TIMEOUT_MS = 5000
 
 
 class WorkspaceService:
@@ -30,6 +34,19 @@ class WorkspaceService:
 
     async def create_workspace(self, data: WorkspaceCreate, owner: User) -> Workspace:
         try:
+            # Limite de workspaces por dono. A linha do usuário é bloqueada
+            # FOR NO KEY UPDATE: criações concorrentes do MESMO usuário se serializam e
+            # a contagem, lida depois do lock, vê o que já confirmou. Sem corrida
+            # além do teto exato.
+            await UserRepository(self.session).lock_for_update(
+                owner.id, lock_timeout_ms=OWNER_LOCK_TIMEOUT_MS
+            )
+            if (
+                await self.workspaces.count_owned_by(owner.id)
+                >= settings.workspace_max_owned_per_user
+            ):
+                raise WorkspaceLimitExceededError
+
             # Consulta prévia só evita o caminho comum; a UNIQUE decide na corrida.
             if await self.workspaces.get_by_slug(data.slug) is not None:
                 await self.session.rollback()

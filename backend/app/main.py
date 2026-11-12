@@ -7,20 +7,30 @@ from app.api.exception_handlers import (
     internal_error_exception_handler,
     invalid_credentials_exception_handler,
     invalid_document_exception_handler,
+    permission_denied_exception_handler,
     request_validation_exception_handler,
     unsupported_document_exception_handler,
+    workspace_limit_exception_handler,
+    workspace_not_found_exception_handler,
+    workspace_quota_exception_handler,
 )
 from app.api.middleware import RequestContextMiddleware
+from app.api.upload_guard import UploadGuardMiddleware
 from app.api.v1.router import router as api_v1_router
 from app.core.config import settings
 from app.core.exceptions import (
     CredentialVerificationError,
+    DocumentDeleteError,
     DocumentTooLargeError,
     DocumentUploadError,
     DuplicateSlugError,
     InvalidCredentialsError,
     InvalidDocumentError,
+    PermissionDeniedError,
     UnsupportedDocumentTypeError,
+    WorkspaceLimitExceededError,
+    WorkspaceNotFoundError,
+    WorkspaceQuotaExceededError,
 )
 from app.core.logging import configure_logging
 
@@ -67,9 +77,32 @@ def create_app() -> FastAPI:
         document_too_large_exception_handler,
     )
     application.add_exception_handler(
+        DocumentDeleteError,
+        internal_error_exception_handler,
+    )
+    application.add_exception_handler(
         DocumentUploadError,
         internal_error_exception_handler,
     )
+    application.add_exception_handler(
+        WorkspaceNotFoundError,
+        workspace_not_found_exception_handler,
+    )
+    application.add_exception_handler(
+        PermissionDeniedError,
+        permission_denied_exception_handler,
+    )
+    application.add_exception_handler(
+        WorkspaceQuotaExceededError,
+        workspace_quota_exception_handler,
+    )
+    application.add_exception_handler(
+        WorkspaceLimitExceededError,
+        workspace_limit_exception_handler,
+    )
+    # Ordem: o último adicionado é o mais externo. O guarda fica DENTRO do contexto
+    # de request (X-Request-ID nas respostas dele) e antes de qualquer leitura.
+    application.add_middleware(UploadGuardMiddleware)
     application.add_middleware(RequestContextMiddleware)
     return application
 

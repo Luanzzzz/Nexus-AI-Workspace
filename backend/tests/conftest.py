@@ -13,12 +13,19 @@ from psycopg.conninfo import conninfo_to_dict
 from sqlalchemy.engine.default import DefaultDialect
 from sqlalchemy.pool.base import Pool
 
-from app.core.rate_limit import limiter
+from app.core.rate_limit import (
+    limiter,
+    upload_concurrency,
+    upload_limiter,
+    workspace_create_limiter,
+)
 
 # Segredo forte e efêmero, definido antes de qualquer import de app.core.config
 # (que instancia Settings no import). Variável de ambiente tem prioridade sobre o .env.
 os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(32)
 os.environ["AUTH_RATE_LIMIT_ENABLED"] = "false"
+os.environ["UPLOAD_LIMITS_ENABLED"] = "false"
+os.environ["WORKSPACE_CREATE_RATE_LIMIT_ENABLED"] = "false"
 
 from app.db.session import database_url  # noqa: E402
 
@@ -163,11 +170,18 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
         _allow_marked_connect.reset(token)
 
 
+def _reset_all_limiters() -> None:
+    limiter.reset()
+    upload_limiter.reset()
+    workspace_create_limiter.reset()
+    upload_concurrency.reset()
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter() -> Iterator[None]:
-    limiter.reset()
+    _reset_all_limiters()
     yield
-    limiter.reset()
+    _reset_all_limiters()
 
 
 @pytest.fixture(autouse=True)

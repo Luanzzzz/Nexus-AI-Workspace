@@ -34,26 +34,52 @@ _NEUTRAL_CLIENT_TYPES = {"", "application/octet-stream"}
 _PDF_MAGIC = b"%PDF-"
 
 
+# Variation selectors (Mn, não Cf) mudam só a apresentação e servem para
+# disfarçar nomes; zero-width e bidi já caem em Cf.
+_VARIATION_SELECTORS = frozenset(
+    [*range(0xFE00, 0xFE10), *range(0x180B, 0x180E), *range(0xE0100, 0xE01F0)]
+)
+_DROP = frozenset({"Cc", "Cf", "Cs", "Co"})
+_MAX_EXTENSION_BYTES = 16
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    # Corta em fronteira de caractere: o decode descarta o byte parcial final.
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="ignore")
+
+
 def sanitize_filename(raw: str | None) -> str:
-    """Nome seguro para exibição/metadados (nunca usado como caminho)."""
+    """Nome seguro para exibição/metadados (nunca usado como caminho).
+
+    Usa NFC e não NFKC de propósito: NFKC reescreveria o nome do usuário
+    (ligaduras, largura total, ordinais) e não resolve confusáveis entre
+    scripts; como o nome nunca vira caminho, preserva-se o que o usuário enviou.
+    """
     if not raw:
         raise InvalidDocumentError
     name = unicodedata.normalize("NFC", raw)
-    # Cc controle, Cf formatação (bidi/zero-width), Cs surrogate, Co uso privado.
-    name = "".join(ch for ch in name if unicodedata.category(ch) not in _DROP)
+    # Cc controle, Cf formatação (bidi/zero-width), Cs surrogate, Co uso privado
+    # e variation selectors são removidos.
+    name = "".join(
+        ch
+        for ch in name
+        if unicodedata.category(ch) not in _DROP and ord(ch) not in _VARIATION_SELECTORS
+    )
+    # Todo espaço Unicode (Zs, Zl, Zp, NBSP...) vira espaço simples, sem repetição.
+    name = " ".join(name.split())
     name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     if not name.strip(". "):
         raise InvalidDocumentError
-    if len(name) > MAX_FILENAME_LENGTH:
+    if len(name.encode("utf-8")) > MAX_FILENAME_LENGTH:
         stem, dot, ext = name.rpartition(".")
-        if dot and 0 < len(ext) <= 10:
-            name = stem[: MAX_FILENAME_LENGTH - len(ext) - 1] + "." + ext
+        if dot and 0 < len(ext.encode("utf-8")) <= _MAX_EXTENSION_BYTES:
+            budget = MAX_FILENAME_LENGTH - len(ext.encode("utf-8")) - 1
+            name = _truncate_utf8(stem, budget).rstrip(" .") + "." + ext
         else:
-            name = name[:MAX_FILENAME_LENGTH]
+            name = _truncate_utf8(name, MAX_FILENAME_LENGTH).rstrip(" .")
+        if not name.strip(". "):
+            raise InvalidDocumentError
     return name
-
-
-_DROP = frozenset({"Cc", "Cf", "Cs", "Co"})
 
 
 def resolve_mime_type(filename: str, client_content_type: str | None) -> str:

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_user
 from app.api.dependencies.database import get_db
+from app.api.dependencies.rate_limit import workspace_create_rate_limit
 from app.api.dependencies.workspace import (
     READ,
     WORKSPACE_NOT_FOUND_DETAIL,
@@ -21,11 +22,20 @@ from app.services.workspace import WorkspaceService
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
+_UNAUTHORIZED = {"description": "Não autenticado."}
+
 
 @router.post(
     "",
     response_model=WorkspaceResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(workspace_create_rate_limit)],
+    responses={
+        401: _UNAUTHORIZED,
+        403: {"description": "Limite de workspaces por usuário atingido."},
+        409: {"description": "Slug indisponível."},
+        429: {"description": "Muitas criações de workspace. Traz Retry-After."},
+    },
 )
 async def create_workspace(
     payload: WorkspaceCreate,
@@ -37,7 +47,11 @@ async def create_workspace(
     return WorkspaceResponse.model_validate(workspace)
 
 
-@router.get("", response_model=list[WorkspaceResponse])
+@router.get(
+    "",
+    response_model=list[WorkspaceResponse],
+    responses={401: _UNAUTHORIZED},
+)
 async def list_workspaces(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db)],
@@ -46,7 +60,11 @@ async def list_workspaces(
     return [WorkspaceResponse.model_validate(item) for item in workspaces]
 
 
-@router.get("/{workspace_id}", response_model=WorkspaceResponse)
+@router.get(
+    "/{workspace_id}",
+    response_model=WorkspaceResponse,
+    responses={401: _UNAUTHORIZED, 404: {"description": "Workspace não encontrado."}},
+)
 async def read_workspace(
     membership: Annotated[WorkspaceMember, Depends(require_permission(READ))],
     session: Annotated[AsyncSession, Depends(get_db)],
