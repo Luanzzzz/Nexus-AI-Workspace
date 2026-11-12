@@ -12,8 +12,8 @@ Logs levam só request_id e o tipo da exceção: nada de caminho, chave ou nome.
 
 import asyncio
 import logging
+from typing import Protocol
 
-from fastapi import UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +43,19 @@ from app.storage.local import LocalDocumentStorage
 
 logger = logging.getLogger(__name__)
 
+
+class UploadSource(Protocol):
+    """Interface mínima do arquivo recebido (sem tipos de framework HTTP)."""
+
+    @property
+    def filename(self) -> str | None: ...
+
+    @property
+    def content_type(self) -> str | None: ...
+
+    async def read(self, size: int = -1, /) -> bytes: ...
+
+
 # Teto de espera pelo FOR SHARE da releitura de membership. Sem ele, uma
 # transação alheia segurando a linha prenderia a conexão do pool indefinidamente.
 # Cobre o FOR SHARE da membership e o FOR UPDATE do workspace (cota).
@@ -56,7 +69,7 @@ class DocumentService:
         self.documents = DocumentRepository(session)
 
     async def upload_document(
-        self, *, workspace_id: int, user: User, upload: UploadFile
+        self, *, workspace_id: int, user: User, upload: UploadSource
     ) -> Document:
         # Erros de validação (415/422/413) sobem como estão: nada foi persistido.
         filename = sanitize_filename(upload.filename)
