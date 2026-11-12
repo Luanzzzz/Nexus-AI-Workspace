@@ -18,6 +18,8 @@ INTERNAL_ERROR_DETAIL = "Erro interno do servidor."
 RATE_LIMITED_DETAIL = "Muitas tentativas. Tente novamente mais tarde."
 REGISTER_PROCESSED_DETAIL = "Cadastro processado."
 DUPLICATE_SLUG_DETAIL = "Slug indisponível."
+WORKSPACE_NOT_FOUND_DETAIL = "Workspace não encontrado."
+FORBIDDEN_DETAIL = "Permissão insuficiente."
 
 
 def sanitize_validation_errors(errors: Sequence[object]) -> list[dict[str, object]]:
@@ -140,3 +142,25 @@ async def document_too_large_exception_handler(
 ) -> JSONResponse:
     _ = (request, exc)
     return document_too_large_response()
+
+
+async def workspace_not_found_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": WORKSPACE_NOT_FOUND_DETAIL},
+    )
+
+
+async def permission_denied_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    _ = (request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": FORBIDDEN_DETAIL},
+    )

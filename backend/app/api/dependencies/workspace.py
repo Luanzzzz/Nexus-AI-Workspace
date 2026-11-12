@@ -12,27 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_user
 from app.api.dependencies.database import get_db
+from app.api.exception_handlers import (  # noqa: F401  (reexport)
+    FORBIDDEN_DETAIL,
+    WORKSPACE_NOT_FOUND_DETAIL,
+)
+from app.core.permissions import (  # noqa: F401  (reexport)
+    DELETE_DOCUMENT,
+    PERMISSIONS,
+    READ,
+    UPLOAD_DOCUMENT,
+    role_has_permission,
+)
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.repositories.workspace_member import WorkspaceMemberRepository
 from app.services.workspace import WorkspaceService
-
-WORKSPACE_NOT_FOUND_DETAIL = "Workspace não encontrado."
-FORBIDDEN_DETAIL = "Permissão insuficiente."
-
-READ = "workspace:read"
-UPLOAD_DOCUMENT = "document:upload"
-DELETE_DOCUMENT = "document:delete"
-
-# Matriz de permissões (ver spec da Fase 3): leitura para todos os papéis;
-# subir e excluir documento só para owner e admin.
-_ALL_ROLES = frozenset({"owner", "admin", "member", "viewer"})
-_MANAGERS = frozenset({"owner", "admin"})
-PERMISSIONS: dict[str, frozenset[str]] = {
-    READ: _ALL_ROLES,
-    UPLOAD_DOCUMENT: _MANAGERS,
-    DELETE_DOCUMENT: _MANAGERS,
-}
 
 # O id é INTEGER no PostgreSQL: valores fora da faixa viram 422, não erro de banco.
 WorkspaceId = Annotated[int, Path(ge=1, le=2147483647)]
@@ -42,11 +36,6 @@ def get_workspace_service(
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> WorkspaceService:
     return WorkspaceService(session)
-
-
-def role_has_permission(role: str, permission: str) -> bool:
-    # Permissão desconhecida nega por padrão.
-    return role in PERMISSIONS.get(permission, frozenset())
 
 
 async def get_workspace_membership(

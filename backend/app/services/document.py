@@ -13,21 +13,18 @@ Logs levam só request_id e o tipo da exceção: nada de caminho, chave ou nome.
 import asyncio
 import logging
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.workspace import (
-    FORBIDDEN_DETAIL,
-    UPLOAD_DOCUMENT,
-    WORKSPACE_NOT_FOUND_DETAIL,
-    role_has_permission,
-)
 from app.core.exceptions import (
     DocumentDeleteError,
     DocumentUploadError,
+    PermissionDeniedError,
     StorageError,
+    WorkspaceNotFoundError,
 )
 from app.core.logging import request_id_ctx
+from app.core.permissions import UPLOAD_DOCUMENT, role_has_permission
 from app.models.document import Document
 from app.models.user import User
 from app.repositories.document import DocumentRepository
@@ -81,16 +78,11 @@ class DocumentService:
             membership = await WorkspaceMemberRepository(self.session).get_membership(
                 workspace_id, user_id, lock_shared=True
             )
-            denied: HTTPException | None = None
+            denied: Exception | None = None
             if membership is None:
-                denied = HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=WORKSPACE_NOT_FOUND_DETAIL,
-                )
+                denied = WorkspaceNotFoundError()
             elif not role_has_permission(membership.role, UPLOAD_DOCUMENT):
-                denied = HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAIL
-                )
+                denied = PermissionDeniedError()
             if denied is not None:
                 await self._compensate(stored.key)
                 raise denied
@@ -102,7 +94,7 @@ class DocumentService:
                 size_bytes=stored.size,
                 storage_key=stored.key,
             )
-        except HTTPException:
+        except (WorkspaceNotFoundError, PermissionDeniedError):
             raise
         except BaseException as exc:
             await self._compensate(stored.key)

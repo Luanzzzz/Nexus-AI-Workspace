@@ -7,8 +7,10 @@ from app.api.exception_handlers import (
     internal_error_exception_handler,
     invalid_credentials_exception_handler,
     invalid_document_exception_handler,
+    permission_denied_exception_handler,
     request_validation_exception_handler,
     unsupported_document_exception_handler,
+    workspace_not_found_exception_handler,
 )
 from app.api.middleware import RequestContextMiddleware
 from app.api.v1.router import router as api_v1_router
@@ -21,7 +23,9 @@ from app.core.exceptions import (
     DuplicateSlugError,
     InvalidCredentialsError,
     InvalidDocumentError,
+    PermissionDeniedError,
     UnsupportedDocumentTypeError,
+    WorkspaceNotFoundError,
 )
 from app.core.logging import configure_logging
 
@@ -74,6 +78,14 @@ def create_app() -> FastAPI:
     application.add_exception_handler(
         DocumentUploadError,
         internal_error_exception_handler,
+    )
+    application.add_exception_handler(
+        WorkspaceNotFoundError,
+        workspace_not_found_exception_handler,
+    )
+    application.add_exception_handler(
+        PermissionDeniedError,
+        permission_denied_exception_handler,
     )
     application.add_middleware(RequestContextMiddleware)
     return application

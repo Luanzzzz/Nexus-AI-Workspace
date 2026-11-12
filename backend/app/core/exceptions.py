@@ -59,3 +59,13 @@ class DocumentDeleteError(Exception):
 class StorageError(Exception):
     # Chave inválida ou caminho inseguro no storage local. Sem caminho na mensagem.
     pass
+
+
+class WorkspaceNotFoundError(Exception):
+    # Workspace inexistente ou sem membership do usuário (404 indistinguível).
+    pass
+
+
+class PermissionDeniedError(Exception):
+    # Membro sem a permissão exigida pelo papel (403).
+    pass
