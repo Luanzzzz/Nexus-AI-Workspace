@@ -17,14 +17,15 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def lock_for_update(self, user_id: int, *, lock_timeout_ms: int) -> None:
-        # Serializa operações por usuário (ex.: limite de workspaces) até o
+        # FOR NO KEY UPDATE (key_share=True): serializa por usuário (ex.: limite de
+        # workspaces) sem conflitar com o KEY SHARE das FKs. Vale até o
         # commit/rollback do chamador. O lock_timeout é local à transação e evita
         # prender a conexão se outra transação segurar a linha.
         await self.session.execute(
             select(func.set_config("lock_timeout", f"{lock_timeout_ms}ms", True))
         )
         await self.session.execute(
-            select(User.id).where(User.id == user_id).with_for_update()
+            select(User.id).where(User.id == user_id).with_for_update(key_share=True)
         )
 
     async def get_by_email(self, email: str) -> User | None:

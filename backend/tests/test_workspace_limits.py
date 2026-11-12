@@ -144,3 +144,25 @@ async def test_rate_limit_respects_disable_switch(client, users, monkeypatch):
     a, _ = users
     for _ in range(3):
         assert (await _create(client, a)).status_code == 201
+
+
+async def test_owner_lock_does_not_conflict_with_fk_key_share(users):
+    """FOR NO KEY UPDATE convive com o KEY SHARE de FKs, mas serializa a si mesmo."""
+    from sqlalchemy.exc import DBAPIError
+
+    async with SessionLocal() as inserter, SessionLocal() as locker:
+        await inserter.execute(
+            select(User.id)
+            .where(User.id == users[0])
+            .with_for_update(key_share=True, read=True)  # FOR KEY SHARE
+        )
+        await UserRepository(locker).lock_for_update(users[0], lock_timeout_ms=300)
+
+        async with SessionLocal() as second:
+            with pytest.raises(DBAPIError):
+                await UserRepository(second).lock_for_update(
+                    users[0], lock_timeout_ms=200
+                )
+            await second.rollback()
+        await locker.rollback()
+        await inserter.rollback()

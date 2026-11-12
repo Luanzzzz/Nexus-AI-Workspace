@@ -291,3 +291,27 @@ async def test_workspace_lock_timeout_is_logged_with_its_own_stage(
     assert "stage=workspace_lock" in caplog.text
     assert "stage=database" not in caplog.text
     assert await _usage(data) == (0, 0)
+
+
+async def test_quota_lock_does_not_conflict_with_fk_key_share(data):
+    """FOR NO KEY UPDATE convive com o KEY SHARE que os INSERTs de FK tomam."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    async with SessionLocal() as inserter, SessionLocal() as locker:
+        await inserter.execute(
+            select(Workspace.id)
+            .where(Workspace.id == data.workspace_id)
+            .with_for_update(key_share=True, read=True)  # FOR KEY SHARE
+        )
+        await locker.execute(text("SET LOCAL lock_timeout = '300ms'"))
+        assert await WorkspaceRepository(locker).lock_for_update(data.workspace_id)
+
+        # Ainda se serializa consigo mesmo.
+        async with SessionLocal() as second:
+            await second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            with pytest.raises(DBAPIError):
+                await WorkspaceRepository(second).lock_for_update(data.workspace_id)
+            await second.rollback()
+        await locker.rollback()
+        await inserter.rollback()
