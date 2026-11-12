@@ -1,7 +1,6 @@
 """Rotas de documentos (upload, consulta e exclusão)."""
 
-from collections.abc import Callable, Coroutine
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -10,13 +9,10 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
-    Request,
     Response,
     UploadFile,
     status,
 )
-from fastapi.routing import APIRoute
-from starlette.types import Message
 
 from app.api.dependencies.auth import get_current_user
 from app.api.dependencies.documents import get_document_service
@@ -26,7 +22,6 @@ from app.api.dependencies.workspace import (
     UPLOAD_DOCUMENT,
     require_permission,
 )
-from app.api.exception_handlers import document_too_large_response
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember
 from app.schemas.document import (
@@ -36,67 +31,6 @@ from app.schemas.document import (
     DocumentResponse,
 )
 from app.services.document import DocumentService
-from app.services.document_validation import MAX_UPLOAD_BYTES
-
-# Folga para boundaries e cabeçalhos do multipart sobre o limite do arquivo.
-_MULTIPART_OVERHEAD = 64 * 1024
-
-
-class _BodyTooLargeError(Exception):
-    """Corpo acumulado acima do teto; interrompe a leitura do multipart."""
-
-
-class _BoundedUploadRoute(APIRoute):
-    """Limita o corpo da requisição ao teto do upload (413), com ou sem tamanho.
-
-    O Starlette grava o multipart em arquivo temporário (acima de 1 MiB) antes
-    das dependencies de autenticação rodarem. Este guarda:
-    - recusa de imediato Content-Length declarado acima do teto;
-    - envolve `receive` e, ao passar de MAX_UPLOAD_BYTES + folga, aborta a
-      leitura (inclusive chunked, sem Content-Length) e responde 413.
-    O spool anterior à autenticação continua existindo, mas fica limitado a
-    ~10 MiB + folga por requisição (ver ADR 0009). O limite exato do arquivo
-    vale no storage.
-    """
-
-    def get_route_handler(
-        self,
-    ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        original = super().get_route_handler()
-        limit = MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD
-
-        async def handler(request: Request) -> Response:
-            declared = request.headers.get("content-length", "")
-            if declared.isascii() and declared.isdigit() and int(declared) > limit:
-                return document_too_large_response()
-
-            receive = request.receive
-            received = 0
-            exceeded = False
-
-            async def bounded_receive() -> Message:
-                nonlocal received, exceeded
-                message = await receive()
-                if message["type"] == "http.request":
-                    received += len(message.get("body", b""))
-                    if received > limit:
-                        exceeded = True
-                        raise _BodyTooLargeError
-                return message
-
-            # Starlette não expõe API pública para trocar o receive de um Request.
-            request._receive = bounded_receive
-            try:
-                return await original(request)
-            except Exception:
-                # O FastAPI converte falhas de parsing em HTTPException(400);
-                # a flag identifica o estouro de teto de forma inequívoca.
-                if exceeded:
-                    return document_too_large_response()
-                raise
-
-        return handler
-
 
 _UNAUTHORIZED = {"description": "Não autenticado."}
 _FORBIDDEN = {"description": "Permissão insuficiente."}
@@ -117,7 +51,6 @@ def _document_not_found() -> HTTPException:
 router = APIRouter(
     prefix="/workspaces/{workspace_id}/documents",
     tags=["documents"],
-    route_class=_BoundedUploadRoute,
 )
 
 

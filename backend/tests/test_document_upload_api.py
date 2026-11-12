@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies.database import get_db
 from app.api.dependencies.documents import get_document_storage
 from app.api.exception_handlers import DOCUMENT_TOO_LARGE_DETAIL
-from app.api.v1.documents import _MULTIPART_OVERHEAD
+from app.api.upload_guard import MULTIPART_OVERHEAD as _MULTIPART_OVERHEAD
 from app.core.tokens import create_access_token
 from app.db.session import engine
 from app.main import app
@@ -318,36 +318,161 @@ async def test_declared_content_length_over_limit_never_reads_body(
     assert _blobs(storage_root) == []
 
 
+_CHUNK = b"a" * 65536
+_PREAMBLE = (
+    b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    b"Content-Type: text/plain\r\n\r\n"
+)
+_MULTIPART = {"Content-Type": "multipart/form-data; boundary=b"}
+
+
+class _CountingBody:
+    """Corpo chunked (sem Content-Length) que registra quanto foi puxado."""
+
+    def __init__(self, total: int = 200 * 1024 * 1024) -> None:
+        self.total = total
+        self.chunks = 0
+        self.consumed = 0
+
+    async def __aiter__(self):
+        self.chunks += 1
+        self.consumed += len(_PREAMBLE)
+        yield _PREAMBLE
+        while self.consumed < self.total:
+            self.chunks += 1
+            self.consumed += len(_CHUNK)
+            yield _CHUNK
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_chunked_body_far_over_limit_is_aborted_with_413(client, storage_root):
-    """Sem Content-Length e sem autenticação: leitura limitada ao teto + folga."""
-    chunk = b"a" * 65536
-    yielded = 0
-    total = 200 * 1024 * 1024
-
-    preamble = (
-        b'--b\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
-        b"Content-Type: text/plain\r\n\r\n"
-    )
-
-    async def body():
-        nonlocal yielded
-        yield preamble
-        while yielded * len(chunk) < total:
-            yielded += 1
-            yield chunk
+async def test_chunked_body_far_over_limit_is_aborted_with_413(
+    client, session, storage_root
+):
+    """Autenticado, sem Content-Length: a leitura para no teto + um bloco."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    body = _CountingBody()
 
     response = await client.post(
-        "/api/v1/workspaces/1/documents",
-        content=body(),
-        headers={"Content-Type": "multipart/form-data; boundary=b"},
+        _url(workspace.id), content=body, headers={**_auth(owner), **_MULTIPART}
     )
 
     assert response.status_code == 413
     assert response.json() == {"detail": DOCUMENT_TOO_LARGE_DETAIL}
-    assert yielded * len(chunk) <= MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD + len(chunk)
+    assert body.consumed <= MAX_UPLOAD_BYTES + _MULTIPART_OVERHEAD + len(_CHUNK)
+    assert body.consumed < body.total
     assert _blobs(storage_root) == []
+    assert await _count(session) == 0
+
+
+def _expired_token(user_id: int) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return create_access_token(user_id, now=datetime.now(UTC) - timedelta(days=3))
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "header",
+    [
+        None,
+        "Bearer",
+        "Bearer ",
+        "Basic abc",
+        "Bearer not-a-jwt",
+        "Bearer " + create_access_token(1)[:-4] + "AAAA",
+        "EXPIRED",
+    ],
+)
+async def test_anonymous_or_invalid_jwt_gets_401_without_reading_body(
+    client, session, storage_root, header
+):
+    """JWT inválido é recusado ANTES de qualquer byte do corpo: nada é puxado."""
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    body = _CountingBody()
+    headers = dict(_MULTIPART)
+    if header == "EXPIRED":
+        headers["Authorization"] = f"Bearer {_expired_token(owner.id)}"
+    elif header is not None:
+        headers["Authorization"] = header
+
+    response = await client.post(_url(workspace.id), content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Não autenticado."}
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert "x-request-id" in response.headers
+    assert body.chunks == 0
+    assert body.consumed == 0
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_invalid_jwt_401_matches_get_current_user_response(client, session):
+    owner = await _user(session)
+    workspace = await _workspace(session, owner)
+    headers = {"Authorization": "Bearer lixo"}
+
+    guarded = await client.post(
+        _url(workspace.id), files={"file": ("a.txt", b"x")}, headers=headers
+    )
+    via_dependency = await client.get(_url(workspace.id), headers=headers)
+
+    assert guarded.status_code == via_dependency.status_code == 401
+    assert guarded.json() == via_dependency.json()
+    assert (
+        guarded.headers["WWW-Authenticate"]
+        == via_dependency.headers["WWW-Authenticate"]
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_valid_jwt_for_inactive_or_missing_user_still_checked_in_db(
+    client, session, storage_root
+):
+    """O guarda não substitui o banco: usuário removido continua dando 401."""
+    ghost_token = create_access_token(2147483000)
+    response = await client.post(
+        "/api/v1/workspaces/1/documents",
+        files={"file": ("a.txt", b"x")},
+        headers={"Authorization": f"Bearer {ghost_token}"},
+    )
+    assert response.status_code == 401
+    assert _blobs(storage_root) == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "expected"),
+    [
+        ("POST", "/api/v1/workspaces/1/documents/2", 405),
+        ("POST", "/api/v1/workspaces/1/documentsX", 404),
+        ("POST", "/api/v1/workspaces/1/documents/", 307),
+        ("PUT", "/api/v1/workspaces/1/documents", 405),
+        ("GET", "/api/v1/workspaces/1/documents", 401),
+        ("POST", "/api/v1/workspaces", 422),
+        ("POST", "/api/v1/auth/login", 422),
+    ],
+)
+async def test_guard_does_not_touch_other_routes(client, method, path, expected):
+    """Rotas parecidas: sem 401/413 do guarda e com o corpo grande declarado."""
+    body = _CountingBody(total=1024)
+    response = await client.request(
+        method,
+        path,
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(MAX_UPLOAD_BYTES + 10 * 1024 * 1024),
+        },
+    )
+    assert response.status_code == expected, response.text
 
 
 @pytest.mark.integration

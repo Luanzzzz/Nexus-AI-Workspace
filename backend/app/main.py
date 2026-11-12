@@ -13,6 +13,7 @@ from app.api.exception_handlers import (
     workspace_not_found_exception_handler,
 )
 from app.api.middleware import RequestContextMiddleware
+from app.api.upload_guard import UploadGuardMiddleware
 from app.api.v1.router import router as api_v1_router
 from app.core.config import settings
 from app.core.exceptions import (
@@ -87,6 +88,9 @@ def create_app() -> FastAPI:
         PermissionDeniedError,
         permission_denied_exception_handler,
     )
+    # Ordem: o último adicionado é o mais externo. O guarda fica DENTRO do contexto
+    # de request (X-Request-ID nas respostas dele) e antes de qualquer leitura.
+    application.add_middleware(UploadGuardMiddleware)
     application.add_middleware(RequestContextMiddleware)
     return application
 
