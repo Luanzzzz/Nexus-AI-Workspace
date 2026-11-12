@@ -62,9 +62,20 @@ router = APIRouter(
         401: _UNAUTHORIZED,
         403: _FORBIDDEN,
         404: _NOT_FOUND,
-        413: {"description": "Arquivo acima de 10 MiB."},
+        413: {
+            "description": (
+                "Arquivo acima de 10 MiB ou cota de armazenamento do workspace "
+                "(documentos ou bytes) excedida."
+            )
+        },
         415: {"description": "Tipo de arquivo não suportado."},
         422: {"description": "Arquivo vazio, inválido ou nome inválido."},
+        429: {
+            "description": (
+                "Limite de uploads por minuto ou de uploads simultâneos do "
+                "usuário. Traz Retry-After."
+            )
+        },
     },
 )
 async def upload_document(

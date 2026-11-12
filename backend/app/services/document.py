@@ -17,18 +17,21 @@ from fastapi import UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import (
     DocumentDeleteError,
     DocumentUploadError,
     PermissionDeniedError,
     StorageError,
     WorkspaceNotFoundError,
+    WorkspaceQuotaExceededError,
 )
 from app.core.logging import request_id_ctx
 from app.core.permissions import UPLOAD_DOCUMENT, role_has_permission
 from app.models.document import Document
 from app.models.user import User
 from app.repositories.document import DocumentRepository
+from app.repositories.workspace import WorkspaceRepository
 from app.repositories.workspace_member import WorkspaceMemberRepository
 from app.services.document_validation import (
     MAX_UPLOAD_BYTES,
@@ -42,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 # Teto de espera pelo FOR SHARE da releitura de membership. Sem ele, uma
 # transação alheia segurando a linha prenderia a conexão do pool indefinidamente.
+# Cobre o FOR SHARE da membership e o FOR UPDATE do workspace (cota).
 MEMBERSHIP_LOCK_TIMEOUT_MS = 5000
 
 
@@ -58,6 +62,15 @@ class DocumentService:
         filename = sanitize_filename(upload.filename)
         mime_type = resolve_mime_type(filename, upload.content_type)
         user_id = user.id
+        # Pré-checagem BARATA da cota, ainda sem I/O de storage: não grava blob
+        # para um workspace já cheio. Não é autoritativa (corrida): a decisão
+        # final é a da transação de escrita, abaixo.
+        count, used_bytes = await self.documents.usage_by_workspace(workspace_id)
+        if (
+            count >= settings.workspace_max_documents
+            or used_bytes >= settings.workspace_max_storage_bytes
+        ):
+            raise WorkspaceQuotaExceededError
         # As dependencies de autorização já consultaram o banco e deixaram uma
         # transação de leitura aberta, segurando uma conexão do pool. Encerra-a
         # ANTES do I/O de storage (até 10 MiB, lento) para devolver a conexão.
@@ -98,6 +111,25 @@ class DocumentService:
                 denied = WorkspaceNotFoundError()
             elif not role_has_permission(membership.role, UPLOAD_DOCUMENT):
                 denied = PermissionDeniedError()
+            if denied is None:
+                # Cota autoritativa: a linha do workspace é bloqueada FOR UPDATE
+                # (sob o mesmo lock_timeout) e as escritas concorrentes do mesmo
+                # workspace se serializam; a contagem relida depois do lock vê
+                # tudo que já confirmou. Vale só até o commit/rollback.
+                if not await WorkspaceRepository(self.session).lock_for_update(
+                    workspace_id
+                ):
+                    denied = WorkspaceNotFoundError()
+                else:
+                    count, used_bytes = await self.documents.usage_by_workspace(
+                        workspace_id
+                    )
+                    if (
+                        count + 1 > settings.workspace_max_documents
+                        or used_bytes + stored.size
+                        > settings.workspace_max_storage_bytes
+                    ):
+                        denied = WorkspaceQuotaExceededError()
             if denied is not None:
                 await self._compensate(stored.key)
                 raise denied
@@ -109,7 +141,11 @@ class DocumentService:
                 size_bytes=stored.size,
                 storage_key=stored.key,
             )
-        except (WorkspaceNotFoundError, PermissionDeniedError):
+        except (
+            WorkspaceNotFoundError,
+            PermissionDeniedError,
+            WorkspaceQuotaExceededError,
+        ):
             raise
         except BaseException as exc:
             await self._compensate(stored.key)

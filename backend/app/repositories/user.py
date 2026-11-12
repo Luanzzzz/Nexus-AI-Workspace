@@ -16,6 +16,13 @@ class UserRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def lock_for_update(self, user_id: int) -> None:
+        # Serializa operações por usuário (ex.: limite de workspaces) até o
+        # commit/rollback do chamador.
+        await self.session.execute(
+            select(User.id).where(User.id == user_id).with_for_update()
+        )
+
     async def get_by_email(self, email: str) -> User | None:
         # O email já chega canonicalizado; esta consulta não altera a caixa.
         statement = select(User).where(User.email == email)

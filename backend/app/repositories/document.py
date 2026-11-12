@@ -56,6 +56,18 @@ class DocumentRepository:
         )
         return int(total or 0)
 
+    async def usage_by_workspace(self, workspace_id: int) -> tuple[int, int]:
+        # (quantidade de documentos, soma de size_bytes) só deste workspace.
+        row = (
+            await self.session.execute(
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(Document.size_bytes), 0),
+                ).where(Document.workspace_id == workspace_id)
+            )
+        ).one()
+        return int(row[0]), int(row[1])
+
     async def get_in_workspace(
         self, workspace_id: int, document_id: int
     ) -> Document | None:
