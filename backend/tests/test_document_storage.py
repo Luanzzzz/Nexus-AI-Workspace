@@ -288,3 +288,36 @@ async def test_persistent_key_collision_raises_and_keeps_first_blob(
     with storage.open(first.key) as fh:
         assert fh.read() == b"primeiro"
     assert [p.name for p in _files(tmp_path / "docs")] == [key]
+
+
+@pytest.mark.asyncio
+async def test_shard_fsync_failure_undoes_link_and_keeps_existing_blob(
+    storage, tmp_path, monkeypatch
+):
+    """fsync do diretório falha DEPOIS do os.link: o link novo é desfeito."""
+    first = await storage.save(_chunks(b"primeiro"), max_bytes=100)
+    root = tmp_path / "docs"
+    before = {p.relative_to(root) for p in _files(root)}
+
+    real_fsync = os.fsync
+    dir_fsyncs = []
+
+    def selective_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            dir_fsyncs.append(fd)
+            raise OSError(5, "EIO simulado")
+        return real_fsync(fd)
+
+    second_key = "cd" + "1" * 30
+    _fixed_keys(monkeypatch, [second_key])
+    monkeypatch.setattr(local.os, "fsync", selective_fsync)
+
+    with pytest.raises((StorageError, OSError)):
+        await storage.save(_chunks(b"segundo"), max_bytes=100)
+
+    assert dir_fsyncs, "o fsync do diretório não foi exercitado"
+    assert not (root / second_key[:2] / second_key).exists()
+    assert not list((root / ".tmp").iterdir())
+    assert {p.relative_to(root) for p in _files(root)} == before
+    with storage.open(first.key) as fh:
+        assert fh.read() == b"primeiro"
