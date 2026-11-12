@@ -12,7 +12,7 @@ from uuid import uuid4
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.dependencies.database import get_db
@@ -202,3 +202,87 @@ async def test_role_downgraded_during_upload_returns_403(harness, data):
     assert response.status_code == 403
     assert await _doc_count(data.workspace_id) == 0
     assert _blobs(storage._root) == []
+
+
+# --- N02: FOR SHARE da releitura com lock_timeout -----------------------------
+
+
+async def test_membership_lock_timeout_fails_upload_cleanly(
+    harness, data, monkeypatch, caplog
+):
+    import time
+
+    import app.services.document as document_service
+
+    monkeypatch.setattr(document_service, "MEMBERSHIP_LOCK_TIMEOUT_MS", 200)
+    client, storage, _ = harness
+    task = _upload(client, data)
+    await asyncio.wait_for(storage.reached.wait(), 5)
+
+    # Sessão B segura a linha de membership com um lock conflitante com FOR SHARE.
+    async with SessionLocal() as other:
+        await other.execute(
+            select(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == data.workspace_id,
+                WorkspaceMember.user_id == data.user_id,
+            )
+            .with_for_update()
+        )
+        started = time.monotonic()
+        storage.release.set()
+        with caplog.at_level("ERROR", logger="app.services.document"):
+            response = await asyncio.wait_for(task, 10)
+        elapsed = time.monotonic() - started
+        await other.rollback()
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Erro interno do servidor."}
+    assert elapsed < 3
+    assert await _doc_count(data.workspace_id) == 0
+    assert _blobs(storage._root) == []
+    assert "stage=membership_lock" in caplog.text
+    assert "Ana" not in caplog.text and "a.txt" not in caplog.text
+
+
+async def test_recheck_holds_share_lock_until_commit(harness, data, monkeypatch):
+    """FOR SHARE bloqueia a revogação entre a releitura e o INSERT.
+
+    O upload pausa logo depois da releitura (antes do INSERT); a sessão B tenta
+    remover a membership com lock_timeout curto e TEM que falhar. Sem FOR SHARE
+    o DELETE confirmaria e o upload criaria um documento sem membership.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    from app.repositories.document import DocumentRepository
+
+    client, storage, _ = harness
+    after_recheck = asyncio.Event()
+    resume = asyncio.Event()
+    original_create = DocumentRepository.create
+
+    async def paused_create(self, **kwargs):
+        after_recheck.set()
+        await resume.wait()
+        return await original_create(self, **kwargs)
+
+    monkeypatch.setattr(DocumentRepository, "create", paused_create)
+    task = _upload(client, data)
+    await asyncio.wait_for(storage.reached.wait(), 5)
+    storage.release.set()
+    await asyncio.wait_for(after_recheck.wait(), 5)
+
+    async with SessionLocal() as other:
+        await other.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        with pytest.raises(DBAPIError):
+            await other.execute(
+                delete(WorkspaceMember).where(
+                    WorkspaceMember.workspace_id == data.workspace_id
+                )
+            )
+        await other.rollback()
+
+    resume.set()
+    response = await asyncio.wait_for(task, 10)
+    assert response.status_code == 201
+    assert await _doc_count(data.workspace_id) == 1

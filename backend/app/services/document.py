@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 from fastapi import UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -38,6 +39,10 @@ from app.services.document_validation import (
 from app.storage.local import LocalDocumentStorage
 
 logger = logging.getLogger(__name__)
+
+# Teto de espera pelo FOR SHARE da releitura de membership. Sem ele, uma
+# transação alheia segurando a linha prenderia a conexão do pool indefinidamente.
+MEMBERSHIP_LOCK_TIMEOUT_MS = 5000
 
 
 class DocumentService:
@@ -71,13 +76,23 @@ class DocumentService:
 
         # Tudo até o commit é "antes do commit": falha aqui garante que nada foi
         # confirmado, então rollback + remoção do blob é seguro.
+        stage = "membership_lock"
         try:
             # TOCTOU: a autorização da dependency é anterior ao I/O e pode estar
             # velha. Relê membership/papel na transação de escrita; FOR SHARE
             # impede que a revogação confirme entre esta leitura e o commit.
+            # SET LOCAL (set_config com is_local) vale só nesta transação.
+            await self.session.execute(
+                select(
+                    func.set_config(
+                        "lock_timeout", f"{MEMBERSHIP_LOCK_TIMEOUT_MS}ms", True
+                    )
+                )
+            )
             membership = await WorkspaceMemberRepository(self.session).get_membership(
                 workspace_id, user_id, lock_shared=True
             )
+            stage = "database"
             denied: Exception | None = None
             if membership is None:
                 denied = WorkspaceNotFoundError()
@@ -100,7 +115,7 @@ class DocumentService:
             await self._compensate(stored.key)
             if not isinstance(exc, Exception):
                 raise
-            self._log_failure("database", exc)
+            self._log_failure(stage, exc)
             raise DocumentUploadError from None
 
         try:
