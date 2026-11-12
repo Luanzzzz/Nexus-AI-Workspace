@@ -58,7 +58,7 @@ class UploadSource(Protocol):
 
 # Teto de espera pelo FOR SHARE da releitura de membership. Sem ele, uma
 # transação alheia segurando a linha prenderia a conexão do pool indefinidamente.
-# Cobre o FOR SHARE da membership e o FOR UPDATE do workspace (cota).
+# Cobre o FOR SHARE da membership e o FOR NO KEY UPDATE do workspace (cota).
 MEMBERSHIP_LOCK_TIMEOUT_MS = 5000
 
 
@@ -127,7 +127,7 @@ class DocumentService:
             if denied is None:
                 # Timeout do lock do workspace é logado como stage próprio.
                 stage = "workspace_lock"
-                # Cota autoritativa: a linha do workspace é bloqueada FOR UPDATE
+                # Cota autoritativa: a linha do workspace é bloqueada FOR NO KEY UPDATE
                 # (sob o mesmo lock_timeout) e as escritas concorrentes do mesmo
                 # workspace se serializam; a contagem relida depois do lock vê
                 # tudo que já confirmou. Vale só até o commit/rollback.

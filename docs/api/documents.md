@@ -47,7 +47,7 @@ O Starlette lê o multipart para arquivo temporário antes das dependencies roda
 
 ### Cotas por workspace
 
-Padrões: 1000 documentos e 1 GiB (`size_bytes`) por workspace. A pré-checagem ocorre antes de gravar o blob; a checagem autoritativa, na transação de escrita sob `FOR UPDATE` do workspace, impede ultrapassagem sob concorrência. Em ambas a resposta é o 413 de cota acima, sem blob nem linha. Um proxy reverso deve limitar o corpo também.
+Padrões: 1000 documentos e 1 GiB (`size_bytes`) por workspace. A pré-checagem ocorre antes de gravar o blob; a checagem autoritativa, na transação de escrita sob `FOR NO KEY UPDATE` do workspace, impede ultrapassagem sob concorrência. Em ambas a resposta é o 413 de cota acima, sem blob nem linha. Um proxy reverso deve limitar o corpo também.
 
 ## `GET /api/v1/workspaces/{workspace_id}/documents`
 

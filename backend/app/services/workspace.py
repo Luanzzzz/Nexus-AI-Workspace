@@ -21,7 +21,7 @@ from app.schemas.workspace import WorkspaceCreate
 # Nome que o PostgreSQL deu ao UNIQUE(slug) na migration.
 _SLUG_UNIQUE_CONSTRAINT = "workspaces_slug_key"
 OWNER_ROLE = "owner"
-# Teto de espera pelo FOR UPDATE da linha do usuário (limite de workspaces).
+# Teto de espera pelo FOR NO KEY UPDATE da linha do usuário (limite de workspaces).
 OWNER_LOCK_TIMEOUT_MS = 5000
 
 
@@ -35,7 +35,7 @@ class WorkspaceService:
     async def create_workspace(self, data: WorkspaceCreate, owner: User) -> Workspace:
         try:
             # Limite de workspaces por dono. A linha do usuário é bloqueada
-            # FOR UPDATE: criações concorrentes do MESMO usuário se serializam e
+            # FOR NO KEY UPDATE: criações concorrentes do MESMO usuário se serializam e
             # a contagem, lida depois do lock, vê o que já confirmou. Sem corrida
             # além do teto exato.
             await UserRepository(self.session).lock_for_update(
