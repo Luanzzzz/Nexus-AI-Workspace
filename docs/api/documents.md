@@ -25,7 +25,7 @@ Fluxo: JWT, membership e permissão `document:upload` (só `owner` e `admin`), v
 | Status | Quando | Corpo |
 | --- | --- | --- |
 | 201 | Criado | `DocumentResponse` (`id`, `workspace_id`, `filename`, `mime_type`, `size_bytes`, `status`, `uploaded_by`, `created_at`, `metadata`) |
-| 401 | Token ausente ou inválido | `{"detail": "Não autenticado."}` |
+| 401 | Token ausente ou inválido (recusado antes de ler o corpo) | `{"detail": "Não autenticado."}` |
 | 403 | Membro com papel `member` ou `viewer` | `{"detail": "Permissão insuficiente."}` |
 | 404 | Workspace inexistente ou sem membership | `{"detail": "Workspace não encontrado."}` |
 | 413 | Arquivo acima de 10 MiB | `{"detail": "Arquivo excede o tamanho máximo de 10 MiB."}` |
@@ -41,7 +41,7 @@ O blob fica no diretório configurado por `DOCUMENT_STORAGE_DIR` (fora de pastas
 
 ### Limite no nível da requisição
 
-O Starlette lê o multipart para arquivo temporário antes da rota rodar. Um guarda recusa com 413, sem ler o corpo, requisições cujo `Content-Length` declarado supere o limite mais uma folga de 64 KiB para o multipart. Corpos sem `Content-Length` (chunked) não são barrados aí; o limite exato continua valendo no storage. Um proxy reverso deve limitar o corpo também.
+O Starlette lê o multipart para arquivo temporário antes das dependencies rodarem. Um middleware ASGI, restrito a este endpoint, age antes de ler qualquer byte do corpo, nesta ordem: (1) `Content-Length` declarado acima do limite mais 64 KiB de folga: 413; (2) Bearer JWT inválido, expirado ou ausente: 401 (`{"detail": "Não autenticado."}`, `WWW-Authenticate: Bearer`), validado sem banco; (3) durante a leitura, os bytes recebidos são contados e, acima do mesmo teto (inclusive corpos chunked), a leitura é abortada com 413. Usuário ativo, membership e papel continuam sendo verificados no banco depois (401/404/403). O limite exato do arquivo continua valendo no storage. Um usuário autenticado sem membership ainda pode causar até ~10 MiB de arquivo temporário por requisição até essa verificação; um limite por usuário está planejado. Um proxy reverso deve limitar o corpo também.
 
 ## `GET /api/v1/workspaces/{workspace_id}/documents`
 
