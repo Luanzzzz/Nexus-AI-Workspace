@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     auth_register_per_ip_limit: int = 5
     auth_rate_limit_window_seconds: int = 60
     trusted_proxies: str = ""
+    # Diretório do storage de documentos: fora de qualquer pasta pública e do Git.
+    document_storage_dir: Path = ROOT_DIR / "backend" / "var" / "documents"
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",

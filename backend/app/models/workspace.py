@@ -16,6 +16,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     # Importação só para o tipo: os modelos de associação se referenciam.
+    from app.models.document import Document
     from app.models.user import User
     from app.models.workspace_member import WorkspaceMember
 
@@ -43,3 +44,4 @@ class Workspace(Base):
     memberships: Mapped[list[WorkspaceMember]] = relationship(
         back_populates="workspace"
     )
+    documents: Mapped[list[Document]] = relationship(back_populates="workspace")

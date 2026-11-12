@@ -168,3 +168,15 @@ def _reset_rate_limiter() -> Iterator[None]:
     limiter.reset()
     yield
     limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_document_storage(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Nenhum teste escreve no diretório real de documentos."""
+    from app.core.config import settings
+
+    isolated = tmp_path_factory.mktemp("default-document-storage")
+    monkeypatch.setattr(settings, "document_storage_dir", isolated)
+    yield
