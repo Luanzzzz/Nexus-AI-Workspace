@@ -246,3 +246,48 @@ async def test_quota_is_per_workspace(make_client, data, monkeypatch):
             )
             await s.execute(delete(Workspace).where(Workspace.id == other_id))
             await s.commit()
+
+
+async def test_deleting_a_document_frees_workspace_quota(
+    make_client, data, monkeypatch
+):
+    monkeypatch.setattr(settings, "workspace_max_documents", 1)
+    monkeypatch.setattr(settings, "workspace_max_storage_bytes", 6)
+    client, _ = make_client()
+    first = await _upload(client, data, "a.txt", b"123456")
+    assert first.status_code == 201
+    assert (await _upload(client, data, "b.txt", b"1")).status_code == 413
+
+    deleted = await client.delete(
+        f"/api/v1/workspaces/{data.workspace_id}/documents/{first.json()['id']}",
+        headers={"Authorization": f"Bearer {create_access_token(data.user_id)}"},
+    )
+    assert deleted.status_code == 204
+    assert await _usage(data) == (0, 0)
+
+    assert (await _upload(client, data, "c.txt", b"123456")).status_code == 201
+
+
+async def test_workspace_lock_timeout_is_logged_with_its_own_stage(
+    make_client, data, monkeypatch, caplog
+):
+    import app.services.document as document_service
+
+    monkeypatch.setattr(document_service, "MEMBERSHIP_LOCK_TIMEOUT_MS", 200)
+    client, _ = make_client()
+    async with SessionLocal() as other:
+        await other.execute(
+            select(Workspace.id)
+            .where(Workspace.id == data.workspace_id)
+            .with_for_update()
+        )
+        with caplog.at_level("ERROR", logger="app.services.document"):
+            response = await asyncio.wait_for(
+                _upload(client, data, "a.txt", b"conteudo"), 10
+            )
+        await other.rollback()
+
+    assert response.status_code == 500
+    assert "stage=workspace_lock" in caplog.text
+    assert "stage=database" not in caplog.text
+    assert await _usage(data) == (0, 0)

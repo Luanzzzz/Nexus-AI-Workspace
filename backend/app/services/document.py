@@ -125,6 +125,8 @@ class DocumentService:
             elif not role_has_permission(membership.role, UPLOAD_DOCUMENT):
                 denied = PermissionDeniedError()
             if denied is None:
+                # Timeout do lock do workspace é logado como stage próprio.
+                stage = "workspace_lock"
                 # Cota autoritativa: a linha do workspace é bloqueada FOR UPDATE
                 # (sob o mesmo lock_timeout) e as escritas concorrentes do mesmo
                 # workspace se serializam; a contagem relida depois do lock vê
@@ -134,6 +136,7 @@ class DocumentService:
                 ):
                     denied = WorkspaceNotFoundError()
                 else:
+                    stage = "database"
                     count, used_bytes = await self.documents.usage_by_workspace(
                         workspace_id
                     )

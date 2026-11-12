@@ -225,3 +225,18 @@ async def test_each_slot_is_released_exactly_once(client, stub, limits_on, monke
         stub.gate.set()
         assert (await held).status_code == 201
         assert upload_concurrency.active("upload:user:1") == 0
+
+
+async def test_concurrent_cap_respects_disable_switch(
+    client, stub, limits_on, monkeypatch
+):
+    monkeypatch.setattr(settings, "upload_limits_enabled", False)
+    monkeypatch.setattr(settings, "upload_max_concurrent_per_user", 1)
+    stub.gate = asyncio.Event()
+    async with client:
+        tasks = [asyncio.create_task(_post(client, 1)) for _ in range(3)]
+        await _until(lambda: stub.entered == 3)
+        assert upload_concurrency.active("upload:user:1") == 0
+        stub.gate.set()
+        for task in tasks:
+            assert (await task).status_code == 201
