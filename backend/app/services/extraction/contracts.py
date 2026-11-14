@@ -20,3 +20,7 @@ class TextSegment:
 @dataclass(frozen=True, slots=True)
 class ExtractionResult:
     segments: tuple[TextSegment, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.segments, tuple):
+            raise ValueError("segments must be a tuple")

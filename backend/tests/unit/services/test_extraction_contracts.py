@@ -18,6 +18,16 @@ def test_accepts_txt_segment_without_page_number() -> None:
     assert segment.page_number is None
 
 
+def test_rejects_boolean_page_number() -> None:
+    with pytest.raises(ValueError):
+        TextSegment(text="Conteúdo válido", page_number=True)
+
+
+def test_rejects_non_string_text() -> None:
+    with pytest.raises(ValueError):
+        TextSegment(text=None, page_number=1)  # type: ignore[arg-type]
+
+
 def test_rejects_zero_page_number() -> None:
     with pytest.raises(ValueError):
         TextSegment(text="Conteúdo válido", page_number=0)
@@ -56,3 +66,15 @@ def test_extraction_result_preserves_segment_order() -> None:
     result = ExtractionResult(segments=(first, second, third))
 
     assert result.segments == (first, second, third)
+
+
+def test_extraction_result_rejects_list_and_is_immutable() -> None:
+    segment = TextSegment(text="Conteúdo válido", page_number=1)
+
+    with pytest.raises(ValueError):
+        ExtractionResult(segments=[segment])  # type: ignore[arg-type]
+
+    result = ExtractionResult(segments=(segment,))
+
+    with pytest.raises(FrozenInstanceError):
+        result.segments = ()  # type: ignore[misc]
