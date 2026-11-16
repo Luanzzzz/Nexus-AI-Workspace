@@ -1,5 +1,14 @@
 from dataclasses import dataclass
 
+_INVISIBLE_FORMATTING_CHARS = "\ufeff\u200b\u200c\u200d\u2060"
+_INVISIBLE_FORMATTING_TABLE = str.maketrans("", "", _INVISIBLE_FORMATTING_CHARS)
+
+
+def has_useful_content(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    return value.translate(_INVISIBLE_FORMATTING_TABLE).strip() != ""
+
 
 @dataclass(frozen=True, slots=True)
 class TextSegment:
@@ -7,7 +16,7 @@ class TextSegment:
     page_number: int | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.text, str) or self.text.strip() == "":
+        if not has_useful_content(self.text):
             raise ValueError("text must contain useful content")
         if self.page_number is None:
             return
@@ -22,5 +31,7 @@ class ExtractionResult:
     segments: tuple[TextSegment, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.segments, tuple):
-            raise ValueError("segments must be a tuple")
+        if not isinstance(self.segments, tuple) or not self.segments:
+            raise ValueError("segments must be a non-empty tuple")
+        if any(not isinstance(segment, TextSegment) for segment in self.segments):
+            raise ValueError("segments must contain only TextSegment items")

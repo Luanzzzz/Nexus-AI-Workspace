@@ -54,6 +54,39 @@ def test_rejects_whitespace_only_file() -> None:
         extract_utf8_text(BytesIO(b" \n\t"))
 
 
+def test_rejects_file_with_only_utf8_bom() -> None:
+    with pytest.raises(NoExtractableTextError):
+        extract_utf8_text(BytesIO(b"\xef\xbb\xbf"))
+
+
+def test_rejects_file_with_utf8_bom_and_whitespace() -> None:
+    with pytest.raises(NoExtractableTextError):
+        extract_utf8_text(BytesIO(b"\xef\xbb\xbf \n\t"))
+
+
+def test_strips_leading_utf8_bom_from_content() -> None:
+    source = BytesIO("\ufeffconteúdo útil".encode("utf-8"))
+
+    result = extract_utf8_text(source)
+
+    assert result.segments[0].text == "conteúdo útil"
+    assert not result.segments[0].text.startswith("\ufeff")
+
+
+def test_rejects_invisible_formatting_only_file() -> None:
+    payload = "\ufeff\u200b\u200c\u200d\u2060".encode("utf-8")
+
+    with pytest.raises(NoExtractableTextError):
+        extract_utf8_text(BytesIO(payload))
+
+
+def test_rejects_invisible_formatting_mixed_with_whitespace() -> None:
+    payload = " \u200b\n\u200c\t\u200d\u2060\ufeff ".encode("utf-8")
+
+    with pytest.raises(NoExtractableTextError):
+        extract_utf8_text(BytesIO(payload))
+
+
 def test_leaves_caller_stream_open() -> None:
     source = BytesIO(b"conteudo")
 

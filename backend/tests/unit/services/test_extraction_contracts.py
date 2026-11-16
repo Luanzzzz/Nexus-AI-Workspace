@@ -51,6 +51,16 @@ def test_rejects_whitespace_only_text() -> None:
         TextSegment(text="   \n\t", page_number=None)
 
 
+def test_rejects_invisible_formatting_only_text() -> None:
+    with pytest.raises(ValueError):
+        TextSegment(text="\ufeff\u200b\u200c\u200d\u2060", page_number=None)
+
+
+def test_rejects_invisible_formatting_mixed_with_whitespace() -> None:
+    with pytest.raises(ValueError):
+        TextSegment(text=" \u200b\n\u200c\t\u200d\u2060\ufeff ", page_number=None)
+
+
 def test_text_segment_is_immutable() -> None:
     segment = TextSegment(text="Conteúdo válido", page_number=1)
 
@@ -78,3 +88,20 @@ def test_extraction_result_rejects_list_and_is_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         result.segments = ()  # type: ignore[misc]
+
+
+def test_extraction_result_rejects_empty_tuple() -> None:
+    with pytest.raises(ValueError):
+        ExtractionResult(segments=())
+
+
+def test_extraction_result_rejects_non_text_segment_items() -> None:
+    with pytest.raises(ValueError):
+        ExtractionResult(segments=("x",))  # type: ignore[arg-type]
+
+
+def test_extraction_result_rejects_mixed_segment_items() -> None:
+    segment = TextSegment(text="Conteúdo válido", page_number=1)
+
+    with pytest.raises(ValueError):
+        ExtractionResult(segments=(segment, "x"))  # type: ignore[arg-type]
