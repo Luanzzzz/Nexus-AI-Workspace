@@ -4,6 +4,7 @@ from app.services.extraction.exceptions import (
     InvalidDocumentContentError,
     NoExtractableTextError,
 )
+from app.services.extraction.pdf import extract_pdf_text
 from app.services.extraction.text import extract_utf8_text
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "InvalidDocumentContentError",
     "NoExtractableTextError",
     "TextSegment",
+    "extract_pdf_text",
     "extract_utf8_text",
 ]
