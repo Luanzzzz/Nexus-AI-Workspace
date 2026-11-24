@@ -12,3 +12,7 @@ class NoExtractableTextError(ExtractionError):
 
 class PasswordProtectedDocumentError(ExtractionError):
     """The document is valid but encrypted and cannot be read without a password."""
+
+
+class ExtractionLimitExceededError(ExtractionError):
+    """The document exceeds a configured extraction processing limit."""

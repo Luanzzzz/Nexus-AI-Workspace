@@ -6,6 +6,7 @@ from pypdf.errors import FileNotDecryptedError, PdfReadError
 
 from app.services.extraction.contracts import ExtractionResult
 from app.services.extraction.exceptions import (
+    ExtractionLimitExceededError,
     InvalidDocumentContentError,
     NoExtractableTextError,
     PasswordProtectedDocumentError,
@@ -126,3 +127,34 @@ def test_translates_file_not_decrypted_during_reader_init(
 
     assert not isinstance(exc_info.value, InvalidDocumentContentError)
     assert isinstance(exc_info.value.__cause__, FileNotDecryptedError)
+
+
+def _pdf_with_blank_pages(page_count: int) -> BytesIO:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=72, height=72)
+    buffer = BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def test_does_not_reject_blank_pdf_at_max_page_count() -> None:
+    with pytest.raises(NoExtractableTextError):
+        extract_pdf_text(_pdf_with_blank_pages(200))
+
+
+def test_rejects_pdf_above_max_page_count() -> None:
+    with pytest.raises(ExtractionLimitExceededError) as exc_info:
+        extract_pdf_text(_pdf_with_blank_pages(201))
+
+    assert not isinstance(exc_info.value, NoExtractableTextError)
+
+
+def test_leaves_caller_stream_open_when_page_limit_exceeded() -> None:
+    source = _pdf_with_blank_pages(201)
+
+    with pytest.raises(ExtractionLimitExceededError):
+        extract_pdf_text(source)
+
+    assert source.closed is False
