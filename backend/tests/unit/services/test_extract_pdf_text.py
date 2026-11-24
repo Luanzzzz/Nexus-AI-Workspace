@@ -29,9 +29,7 @@ def _assemble_pdf(object_bodies: list[bytes]) -> bytes:
 
 
 def _digital_pdf_with_page_text(text: str) -> BytesIO:
-    escaped = (
-        text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    )
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     content = f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET\n".encode("ascii")
     pdf = _assemble_pdf(
         [
