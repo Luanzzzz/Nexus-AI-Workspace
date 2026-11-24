@@ -2,7 +2,7 @@ from io import BytesIO
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.errors import PdfReadError
+from pypdf.errors import FileNotDecryptedError, PdfReadError
 
 from app.services.extraction.contracts import ExtractionResult
 from app.services.extraction.exceptions import (
@@ -108,3 +108,21 @@ def test_rejects_corrupt_pdf_structure() -> None:
         extract_pdf_text(_corrupt_pdf_with_header())
 
     assert isinstance(exc_info.value.__cause__, PdfReadError)
+
+
+def test_translates_file_not_decrypted_during_reader_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_open(_source: object) -> None:
+        raise FileNotDecryptedError("File has not been decrypted")
+
+    monkeypatch.setattr(
+        "app.services.extraction.pdf.PdfReader",
+        fail_to_open,
+    )
+
+    with pytest.raises(PasswordProtectedDocumentError) as exc_info:
+        extract_pdf_text(BytesIO(b"%PDF-1.4\n"))
+
+    assert not isinstance(exc_info.value, InvalidDocumentContentError)
+    assert isinstance(exc_info.value.__cause__, FileNotDecryptedError)

@@ -14,11 +14,8 @@ from app.services.extraction.exceptions import (
 def extract_pdf_text(source: BinaryIO) -> ExtractionResult:
     try:
         reader = PdfReader(source)
-    except PdfReadError as exc:
-        raise InvalidDocumentContentError("document is not a valid PDF") from exc
-    if reader.is_encrypted:
-        raise PasswordProtectedDocumentError("document is password-protected")
-    try:
+        if reader.is_encrypted:
+            raise PasswordProtectedDocumentError("document is password-protected")
         segments: list[TextSegment] = []
         for page_number, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
