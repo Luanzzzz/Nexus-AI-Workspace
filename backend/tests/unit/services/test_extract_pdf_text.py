@@ -1,9 +1,15 @@
 from io import BytesIO
 
 import pytest
+from pypdf import PdfWriter
+from pypdf.errors import FileNotDecryptedError, PdfReadError
 
 from app.services.extraction.contracts import ExtractionResult
-from app.services.extraction.exceptions import NoExtractableTextError
+from app.services.extraction.exceptions import (
+    InvalidDocumentContentError,
+    NoExtractableTextError,
+    PasswordProtectedDocumentError,
+)
 from app.services.extraction.pdf import extract_pdf_text
 
 
@@ -74,3 +80,49 @@ def _blank_page_pdf() -> BytesIO:
 def test_rejects_pdf_with_no_extractable_text() -> None:
     with pytest.raises(NoExtractableTextError):
         extract_pdf_text(_blank_page_pdf())
+
+
+def _password_protected_pdf() -> BytesIO:
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt("secret-password")
+    buffer = BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def test_rejects_password_protected_pdf() -> None:
+    with pytest.raises(PasswordProtectedDocumentError) as exc_info:
+        extract_pdf_text(_password_protected_pdf())
+
+    assert not isinstance(exc_info.value, InvalidDocumentContentError)
+
+
+def _corrupt_pdf_with_header() -> BytesIO:
+    return BytesIO(b"%PDF-1.4\nthis is not a valid pdf structure\n")
+
+
+def test_rejects_corrupt_pdf_structure() -> None:
+    with pytest.raises(InvalidDocumentContentError) as exc_info:
+        extract_pdf_text(_corrupt_pdf_with_header())
+
+    assert isinstance(exc_info.value.__cause__, PdfReadError)
+
+
+def test_translates_file_not_decrypted_during_reader_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_open(_source: object) -> None:
+        raise FileNotDecryptedError("File has not been decrypted")
+
+    monkeypatch.setattr(
+        "app.services.extraction.pdf.PdfReader",
+        fail_to_open,
+    )
+
+    with pytest.raises(PasswordProtectedDocumentError) as exc_info:
+        extract_pdf_text(BytesIO(b"%PDF-1.4\n"))
+
+    assert not isinstance(exc_info.value, InvalidDocumentContentError)
+    assert isinstance(exc_info.value.__cause__, FileNotDecryptedError)
