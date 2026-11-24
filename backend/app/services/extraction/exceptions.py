@@ -8,3 +8,7 @@ class InvalidDocumentContentError(ExtractionError):
 
 class NoExtractableTextError(ExtractionError):
     """The document decoded successfully but contains no useful text."""
+
+
+class PasswordProtectedDocumentError(ExtractionError):
+    """The document is valid but encrypted and cannot be read without a password."""
